@@ -29,6 +29,7 @@ class AudioRecorderService :
     private var ramCapture: RamAudioCapture? = null
     private var ramBuffer: EncodedAudioFrameRingBuffer? = null
     private var ramMode = false
+    private var ramNextPresentationTimeUs = 0L
     @Volatile
     private var ramAmplitude = 0
 
@@ -71,6 +72,8 @@ class AudioRecorderService :
     }
 
     override fun start() {
+        ramBuffer = null
+        ramNextPresentationTimeUs = 0L
         ramMode = tryStartRamCapture()
         try {
             super.start()
@@ -183,7 +186,8 @@ class AudioRecorderService :
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return false
 
         val audioSettings = settings.audioRecorderSettings
-        if (audioSettings.getEncoder() != MediaRecorder.AudioEncoder.AAC ||
+        if (!audioSettings.experimentalRamBuffer ||
+            audioSettings.getEncoder() != MediaRecorder.AudioEncoder.AAC ||
             audioSettings.getOutputFormat() != MediaRecorder.OutputFormat.AAC_ADTS
         ) {
             return false
@@ -203,21 +207,37 @@ class AudioRecorderService :
                 audioSettings = audioSettings,
                 buffer = buffer,
                 onAmplitude = { ramAmplitude = it },
-                onError = { onError() },
+                onError = { handleRamCaptureError() },
+                startPresentationTimeUs = ramNextPresentationTimeUs,
             ).also {
-                it.start()
                 ramCapture = it
                 ramBuffer = buffer
+                it.start()
             }
             true
         }.getOrElse {
+            ramCapture = null
+            ramBuffer = null
             if (selectedMicrophone != null) clearAudioDevice()
             false
         }
     }
 
+    private fun handleRamCaptureError() {
+        if (!ramMode || state == RecorderState.STOPPED) return
+
+        // The capture has already released its resources before this callback. Mark the
+        // service stopped before handing control to the existing save/error flow.
+        changeState(RecorderState.STOPPED)
+        onError()
+    }
+
     private fun stopRamCapture() {
-        ramCapture?.stop()
+        val capture = ramCapture
+        capture?.stop()
+        if (capture != null) {
+            ramNextPresentationTimeUs = capture.nextPresentationTimeUs
+        }
         ramCapture = null
         if (selectedMicrophone != null) {
             runCatching { clearAudioDevice() }

@@ -16,13 +16,23 @@ class RamAudioCapture(
     val buffer: EncodedAudioFrameRingBuffer,
     private val onAmplitude: (Int) -> Unit,
     private val onError: (Throwable) -> Unit,
+    private val startPresentationTimeUs: Long,
 ) {
-    private val running = AtomicBoolean(true)
+    private val running = AtomicBoolean(false)
+    private val started = AtomicBoolean(false)
+    private val workerStarted = AtomicBoolean(false)
+    private val codecStarted = AtomicBoolean(false)
+    private val resourcesReleased = AtomicBoolean(false)
+    private val lifecycleLock = Any()
     private lateinit var audioRecord: AudioRecord
     private lateinit var codec: MediaCodec
     private lateinit var worker: Thread
     private var framesRead = 0L
     private var encoderEnded = false
+
+    @Volatile
+    var nextPresentationTimeUs = startPresentationTimeUs
+        private set
 
     init {
         val sampleRate = audioSettings.getEffectiveSamplingRate()
@@ -73,48 +83,90 @@ class RamAudioCapture(
     }
 
     fun start() {
-        try {
-            audioRecord.startRecording()
-            check(audioRecord.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
-                "AudioRecord did not start recording"
+        synchronized(lifecycleLock) {
+            check(started.compareAndSet(false, true)) { "Capture can only be started once" }
+            try {
+                audioRecord.startRecording()
+                check(audioRecord.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
+                    "AudioRecord did not start recording"
+                }
+                codec.start()
+                codecStarted.set(true)
+                running.set(true)
+                workerStarted.set(true)
+                worker.start()
+            } catch (error: Throwable) {
+                running.set(false)
+                workerStarted.set(false)
+                releaseResources()
+                throw error
             }
-            codec.start()
-            worker.start()
-        } catch (error: Throwable) {
-            release()
-            throw error
         }
     }
 
     fun stop() {
-        if (!running.compareAndSet(true, false)) return
-        runCatching { audioRecord.stop() }
-        if (Thread.currentThread() !== worker) {
-            runCatching { worker.join(2_000) }
+        val shouldJoin = synchronized(lifecycleLock) {
+            if (!started.get()) {
+                releaseResources()
+                return@synchronized false
+            }
+
+            running.set(false)
+            runCatching { audioRecord.stop() }
+            if (!workerStarted.get()) {
+                releaseResources()
+                false
+            } else {
+                Thread.currentThread() !== worker
+            }
         }
-        release()
+
+        if (shouldJoin) joinWorker()
+    }
+
+    private fun joinWorker() {
+        var interrupted = false
+        while (worker.isAlive) {
+            try {
+                worker.join()
+            } catch (_: InterruptedException) {
+                interrupted = true
+            }
+        }
+        if (interrupted) Thread.currentThread().interrupt()
     }
 
     private fun run() {
-        val pcm = ByteArray(audioRecord.bufferSizeInFrames.coerceAtLeast(1024) * 2)
+        val maxReadBytes = audioRecord.bufferSizeInFrames.coerceAtLeast(1024) * 2
+        var failure: Throwable? = null
         try {
             while (running.get()) {
                 val inputIndex = codec.dequeueInputBuffer(CODEC_TIMEOUT_US)
                 if (inputIndex >= 0) {
                     val input = codec.getInputBuffer(inputIndex) ?: continue
                     input.clear()
-                    val bytesRead = audioRecord.read(input, minOf(input.remaining(), pcm.size))
+                    val bytesRead = audioRecord.read(input, minOf(input.remaining(), maxReadBytes))
                     if (bytesRead > 0) {
                         val amplitude = peakAmplitude(input, bytesRead)
+                        val presentationTimeUs = AudioCaptureTimestamps.atSample(
+                            startPresentationTimeUs,
+                            framesRead,
+                            audioSettings.getEffectiveSamplingRate(),
+                        )
                         onAmplitude(amplitude)
                         codec.queueInputBuffer(
                             inputIndex,
                             0,
                             bytesRead,
-                            framesRead * 1_000_000L / audioSettings.getEffectiveSamplingRate(),
+                            presentationTimeUs,
                             0,
                         )
                         framesRead += bytesRead / BYTES_PER_PCM_FRAME
+                        nextPresentationTimeUs = AudioCaptureTimestamps.atSample(
+                            startPresentationTimeUs,
+                            framesRead,
+                            audioSettings.getEffectiveSamplingRate(),
+                        )
                     } else if (bytesRead < 0) {
                         throw IllegalStateException("AudioRecord read failed: $bytesRead")
                     }
@@ -122,22 +174,33 @@ class RamAudioCapture(
                 drainEncoder()
             }
 
-            val inputIndex = codec.dequeueInputBuffer(CODEC_TIMEOUT_US)
-            if (inputIndex >= 0) {
-                codec.queueInputBuffer(
-                    inputIndex,
-                    0,
-                    0,
-                    framesRead * 1_000_000L / audioSettings.getEffectiveSamplingRate(),
-                    MediaCodec.BUFFER_FLAG_END_OF_STREAM,
-                )
-            }
             val drainDeadline = System.nanoTime() + 2_000_000_000L
+            var eosQueued = false
+            while (!eosQueued && System.nanoTime() < drainDeadline) {
+                val inputIndex = codec.dequeueInputBuffer(CODEC_TIMEOUT_US)
+                if (inputIndex >= 0) {
+                    codec.queueInputBuffer(
+                        inputIndex,
+                        0,
+                        0,
+                        nextPresentationTimeUs,
+                        MediaCodec.BUFFER_FLAG_END_OF_STREAM,
+                    )
+                    eosQueued = true
+                }
+                drainEncoder()
+            }
             while (!encoderEnded && System.nanoTime() < drainDeadline) {
                 drainEncoder()
             }
         } catch (error: Throwable) {
-            if (running.get()) onError(error)
+            if (running.compareAndSet(true, false)) {
+                runCatching { audioRecord.stop() }
+                failure = error
+            }
+        } finally {
+            releaseResources()
+            failure?.let { runCatching { onError(it) } }
         }
     }
 
@@ -184,8 +247,12 @@ class RamAudioCapture(
         return peak
     }
 
-    private fun release() {
-        runCatching { codec.stop() }
+    private fun releaseResources() {
+        if (!resourcesReleased.compareAndSet(false, true)) return
+
+        if (codecStarted.compareAndSet(true, false)) {
+            runCatching { codec.stop() }
+        }
         runCatching { codec.release() }
         runCatching { audioRecord.release() }
     }
@@ -198,5 +265,11 @@ class RamAudioCapture(
         private const val CODEC_TIMEOUT_US = 10_000L
         private const val BYTES_PER_PCM_SAMPLE = 2
         private const val BYTES_PER_PCM_FRAME = 2
+    }
+}
+
+internal object AudioCaptureTimestamps {
+    fun atSample(startPresentationTimeUs: Long, framesRead: Long, sampleRate: Int): Long {
+        return startPresentationTimeUs + framesRead * 1_000_000L / sampleRate
     }
 }

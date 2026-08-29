@@ -172,6 +172,19 @@ fun SettingsScreen(
                             title = stringResource(R.string.ui_settings_sections_audio_title),
                             description = stringResource(R.string.ui_settings_sections_audio_description),
                         )
+                        GlobalSwitch(
+                            label = stringResource(R.string.ui_settings_option_experimentalRamBuffer_label),
+                            checked = settings.audioRecorderSettings.experimentalRamBuffer,
+                            onCheckedChange = { enabled ->
+                                scope.launch {
+                                    dataStore.updateData {
+                                        it.setAudioRecorderSettings(
+                                            it.audioRecorderSettings.setExperimentalRamBuffer(enabled)
+                                        )
+                                    }
+                                }
+                            },
+                        )
                         AudioRecorderShowAllMicrophonesTile(settings = settings)
                         AudioRecorderSamplingRateTile(settings = settings)
                         AudioRecorderEncoderTile(

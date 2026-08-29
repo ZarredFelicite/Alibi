@@ -1,10 +1,19 @@
 package app.myzel394.alibi.services
 
+import app.myzel394.alibi.db.AudioRecorderSettings
+import kotlinx.serialization.json.Json
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Test
 
 class EncodedAudioFrameRingBufferTest {
+    @Test
+    fun ramBufferIsOptInForNewAndExistingSettings() {
+        assertFalse(AudioRecorderSettings.getDefaultInstance().experimentalRamBuffer)
+        assertFalse(Json.decodeFromString<AudioRecorderSettings>("{}").experimentalRamBuffer)
+    }
+
     @Test
     fun evictsFramesOlderThanRollingDurationAndKeepsOrder() {
         val ring = EncodedAudioFrameRingBuffer(maxDurationUs = 100, maxBytes = 100)
@@ -23,6 +32,30 @@ class EncodedAudioFrameRingBufferTest {
 
         assertEquals(3, ring.sizeBytes())
         assertArrayEquals(byteArrayOf(3, 4, 5), ring.snapshot().single().data)
+    }
+
+    @Test
+    fun resumedCaptureStartsAfterPreviousCaptureTimestamp() {
+        val sampleRate = 16_000
+        val ring = EncodedAudioFrameRingBuffer(maxDurationUs = 1_000_000, maxBytes = 100)
+        ring.add(AudioCaptureTimestamps.atSample(0, 0, sampleRate), byteArrayOf(0))
+
+        val resumedAt = AudioCaptureTimestamps.atSample(0, 1_600, sampleRate)
+        ring.add(AudioCaptureTimestamps.atSample(resumedAt, 0, sampleRate), byteArrayOf(1))
+
+        assertEquals(listOf(0L, 100_000L), ring.snapshot().map { it.presentationTimeUs })
+        assertEquals(100_000L, ring.durationUs())
+    }
+
+    @Test
+    fun snapshotIncludesTheFinalEncodedFrame() {
+        val ring = EncodedAudioFrameRingBuffer(maxDurationUs = 1_000, maxBytes = 100)
+        ring.add(0, byteArrayOf(1))
+        val finalFrame = byteArrayOf(2, 3)
+        ring.add(500, finalFrame)
+        finalFrame[0] = 9
+
+        assertArrayEquals(byteArrayOf(2, 3), ring.snapshot().last().data)
     }
 
     @Test

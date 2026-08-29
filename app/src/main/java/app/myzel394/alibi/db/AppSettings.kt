@@ -207,6 +207,8 @@ data class AudioRecorderSettings(
     val outputFormat: Int? = null,
     val encoder: Int? = null,
     val showAllMicrophones: Boolean = false,
+    // RAM capture is deliberately opt-in because it uses more app CPU than MediaRecorder.
+    val experimentalRamBuffer: Boolean = false,
 ) {
     fun getOutputFormat(): Int {
         if (outputFormat != null) {
@@ -327,6 +329,10 @@ data class AudioRecorderSettings(
 
     fun setShowAllMicrophones(showAllMicrophones: Boolean): AudioRecorderSettings {
         return copy(showAllMicrophones = showAllMicrophones)
+    }
+
+    fun setExperimentalRamBuffer(enabled: Boolean): AudioRecorderSettings {
+        return copy(experimentalRamBuffer = enabled)
     }
 
     fun isEncoderCompatible(encoder: Int): Boolean {
