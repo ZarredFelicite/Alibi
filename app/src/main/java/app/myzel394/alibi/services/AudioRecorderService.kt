@@ -17,6 +17,7 @@ import app.myzel394.alibi.enums.RecorderState
 import app.myzel394.alibi.helpers.AudioBatchesFolder
 import app.myzel394.alibi.helpers.BatchesFolder
 import app.myzel394.alibi.ui.utils.MicrophoneInfo
+import java.io.OutputStream
 
 class AudioRecorderService :
     IntervalRecorderService<RecordingInformation, AudioBatchesFolder>() {
@@ -25,6 +26,14 @@ class AudioRecorderService :
     private val handler = Handler(Looper.getMainLooper())
     private val amplitudeUpdateRunnable = Runnable { updateAmplitude() }
     private var amplitudeUpdatesEnabled = false
+    private var ramCapture: RamAudioCapture? = null
+    private var ramBuffer: EncodedAudioFrameRingBuffer? = null
+    private var ramMode = false
+    @Volatile
+    private var ramAmplitude = 0
+
+    override val usesIntervalBatches: Boolean
+        get() = !ramMode
 
     var amplitudes = mutableListOf<Int>()
         private set
@@ -42,6 +51,8 @@ class AudioRecorderService :
     var onAmplitudeChange: ((List<Int>) -> Unit)? = null
 
     override fun startNewCycle() {
+        if (ramMode) return
+
         super.startNewCycle()
 
         val newRecorder = createRecorder().also {
@@ -60,7 +71,16 @@ class AudioRecorderService :
     }
 
     override fun start() {
-        super.start()
+        ramMode = tryStartRamCapture()
+        try {
+            super.start()
+        } catch (error: RuntimeException) {
+            if (ramMode) {
+                stopRamCapture()
+                ramMode = false
+            }
+            throw error
+        }
 
         registerMicrophoneListener()
     }
@@ -69,21 +89,26 @@ class AudioRecorderService :
         super.pause()
 
         stopAmplitudeUpdates()
-        resetRecorder()
+        if (ramMode) stopRamCapture() else resetRecorder()
     }
 
     override suspend fun stop() {
         stopAmplitudeUpdates()
         amplitudeUpdatesEnabled = false
-        resetRecorder()
+        if (ramMode) stopRamCapture() else resetRecorder()
         unregisterMicrophoneListener()
 
         super.stop()
     }
 
     override fun resume() {
+        if (ramMode && !tryStartRamCapture()) {
+            ramMode = false
+        }
         super.resume()
-        scheduleAmplitudeUpdate()
+        if (!ramMode) {
+            scheduleAmplitudeUpdate()
+        }
     }
 
     override fun startForegroundService() {
@@ -103,6 +128,8 @@ class AudioRecorderService :
     private fun getAmplitudeAmount(): Int = amplitudesAmount
 
     private fun getAmplitude(): Int {
+        if (ramMode) return ramAmplitude
+
         return try {
             recorder!!.maxAmplitude
         } catch (error: IllegalStateException) {
@@ -149,6 +176,92 @@ class AudioRecorderService :
         if (amplitudeUpdatesEnabled && state === RecorderState.RECORDING) {
             handler.postDelayed(amplitudeUpdateRunnable, 100)
         }
+    }
+
+    // ==== Encoded RAM buffer ====
+    private fun tryStartRamCapture(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return false
+
+        val audioSettings = settings.audioRecorderSettings
+        if (audioSettings.getEncoder() != MediaRecorder.AudioEncoder.AAC ||
+            audioSettings.getOutputFormat() != MediaRecorder.OutputFormat.AAC_ADTS
+        ) {
+            return false
+        }
+
+        val estimatedBytes = audioSettings.getEffectiveBitRate().toLong() *
+                settings.maxDuration * 5 / 32_000L
+        if (estimatedBytes > MAX_RAM_BUFFER_BYTES) return false
+
+        val buffer = ramBuffer ?: EncodedAudioFrameRingBuffer(
+            maxDurationUs = settings.maxDuration * 1000L,
+            maxBytes = estimatedBytes.coerceAtLeast(1).toInt(),
+        )
+        return runCatching {
+            if (selectedMicrophone != null) startAudioDevice()
+            RamAudioCapture(
+                audioSettings = audioSettings,
+                buffer = buffer,
+                onAmplitude = { ramAmplitude = it },
+                onError = { onError() },
+            ).also {
+                it.start()
+                ramCapture = it
+                ramBuffer = buffer
+            }
+            true
+        }.getOrElse {
+            if (selectedMicrophone != null) clearAudioDevice()
+            false
+        }
+    }
+
+    private fun stopRamCapture() {
+        ramCapture?.stop()
+        ramCapture = null
+        if (selectedMicrophone != null) {
+            runCatching { clearAudioDevice() }
+        }
+    }
+
+    private fun materializeRamSnapshot(): Long? {
+        val buffer = ramBuffer ?: return null
+        val data = buffer.snapshotAsAdtsAac(
+            sampleRate = settings.audioRecorderSettings.getEffectiveSamplingRate(),
+            channelCount = 1,
+        )
+        if (data.isEmpty()) return null
+
+        val fileName = if (batchesFolder.type == BatchesFolder.BatchType.MEDIA) {
+            "${batchesFolder.mediaPrefix}0.aac"
+        } else {
+            "0.aac"
+        }
+        val output: OutputStream = when (batchesFolder.type) {
+            BatchesFolder.BatchType.INTERNAL ->
+                batchesFolder.asInternalGetFile(0, fileName.substringAfterLast('.')).outputStream()
+
+            BatchesFolder.BatchType.CUSTOM -> {
+                val file = batchesFolder.getCustomDefinedFolder().findFile(fileName)
+                    ?: batchesFolder.getCustomDefinedFolder().createFile("audio/aac", fileName)!!
+                contentResolver.openOutputStream(file.uri, "wt")!!
+            }
+
+            BatchesFolder.BatchType.MEDIA -> {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    val uri = batchesFolder.getOrCreateMediaFile(
+                        name = fileName,
+                        mimeType = "audio/aac",
+                        relativePath = AudioBatchesFolder.SCOPED_STORAGE_RELATIVE_PATH,
+                    )
+                    contentResolver.openOutputStream(uri, "wt")!!
+                } else {
+                    batchesFolder.asMediaGetLegacyFile(fileName).outputStream()
+                }
+            }
+        }
+        output.use { it.write(data) }
+        return buffer.durationUs() / 1000L
     }
 
     // ==== Audio device related ====
@@ -264,7 +377,15 @@ class AudioRecorderService :
         onSelectedMicrophoneChange(microphone)
 
         if (state == RecorderState.RECORDING) {
-            startNewCycle()
+            if (ramMode) {
+                stopRamCapture()
+                if (!tryStartRamCapture()) {
+                    ramMode = false
+                    startNewCycle()
+                }
+            } else {
+                startNewCycle()
+            }
         }
     }
 
@@ -322,14 +443,25 @@ class AudioRecorderService :
     }
 
     // ==== Settings ====
-    override fun getRecordingInformation() =
-        RecordingInformation(
+    override fun getRecordingInformation(): RecordingInformation {
+        val duration = if (ramMode) materializeRamSnapshot() else null
+        return RecordingInformation(
             folderPath = batchesFolder.exportFolderForSettings(),
             recordingStart = recordingStart,
             maxDuration = settings.maxDuration,
-            batchesAmount = batchesFolder.getBatchesForFFmpeg().size,
+            batchesAmount = if (ramMode && duration != null) {
+                1
+            } else {
+                batchesFolder.getBatchesForFFmpeg().size
+            },
             fileExtension = settings.audioRecorderSettings.fileExtension,
             intervalDuration = settings.intervalDuration,
             type = RecordingInformation.Type.AUDIO,
+            duration = duration,
         )
+    }
+
+    companion object {
+        private const val MAX_RAM_BUFFER_BYTES = 32L * 1024L * 1024L
+    }
 }

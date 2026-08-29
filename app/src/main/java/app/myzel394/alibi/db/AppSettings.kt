@@ -164,6 +164,7 @@ data class RecordingInformation(
     val intervalDuration: Long,
     val fileExtension: String,
     val type: Type,
+    val duration: Long? = null,
 ) {
     fun hasRecordingsAvailable(context: Context): Boolean =
         when (type) {
@@ -188,7 +189,7 @@ data class RecordingInformation(
     fun getFullDuration(): Long {
         // This is not accurate, since the last batch may be shorter than the others
         // but it's good enough
-        return intervalDuration * batchesAmount - (intervalDuration * 0.5).toLong()
+        return duration ?: intervalDuration * batchesAmount - (intervalDuration * 0.5).toLong()
     }
 
     enum class Type {

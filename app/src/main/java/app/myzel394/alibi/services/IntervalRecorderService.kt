@@ -18,6 +18,9 @@ abstract class IntervalRecorderService<I, B : BatchesFolder> :
 
     private lateinit var cycleTimer: ScheduledExecutorService
 
+    protected open val usesIntervalBatches: Boolean
+        get() = true
+
     abstract var batchesFolder: B
 
     var onBatchesFolderNotAccessible: () -> Unit = {}
@@ -69,21 +72,29 @@ abstract class IntervalRecorderService<I, B : BatchesFolder> :
             throw AvoidErrorDialogError()
         }
 
-        createTimer()
+        if (usesIntervalBatches) {
+            createTimer()
+        }
     }
 
     override fun pause() {
         super.pause()
-        cycleTimer.shutdown()
+        if (::cycleTimer.isInitialized) {
+            cycleTimer.shutdown()
+        }
     }
 
     override fun resume() {
         super.resume()
-        createTimer()
+        if (usesIntervalBatches) {
+            createTimer()
+        }
     }
 
     override suspend fun stop() {
-        cycleTimer.shutdown()
+        if (::cycleTimer.isInitialized) {
+            cycleTimer.shutdown()
+        }
         batchesFolder.cleanup()
         super.stop()
     }
