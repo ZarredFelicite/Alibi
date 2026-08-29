@@ -14,7 +14,6 @@ import app.myzel394.alibi.ui.SUPPORTS_SCOPED_STORAGE
 import app.myzel394.alibi.ui.components.RecorderScreen.organisms.RecorderModel
 import app.myzel394.alibi.ui.utils.PermissionHelper
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.Json
 import java.time.LocalDateTime
 
 @Serializable
@@ -34,8 +33,8 @@ data class AppSettings(
     /// Recording information
     // 30 minutes
     val maxDuration: Long = 15 * 60 * 1000L,
-    // 60 seconds
-    val intervalDuration: Long = 60 * 1000L,
+    // 5 minutes
+    val intervalDuration: Long = 5 * 60 * 1000L,
 
     val notificationSettings: NotificationSettings? = null,
     val deleteRecordingsImmediately: Boolean = false,
@@ -131,7 +130,7 @@ data class AppSettings(
     }
 
     fun exportToString(): String {
-        return Json.encodeToString(serializer(), this)
+        return AppSettingsSerializer.encode(this)
     }
 
     enum class Theme {
@@ -150,10 +149,7 @@ data class AppSettings(
         fun getDefaultInstance(): AppSettings = AppSettings()
 
         fun fromExportedString(data: String): AppSettings {
-            return Json.decodeFromString(
-                serializer(),
-                data,
-            )
+            return AppSettingsSerializer.decode(data)
         }
     }
 }
@@ -203,9 +199,10 @@ data class RecordingInformation(
 
 @Serializable
 data class AudioRecorderSettings(
-    // 320 Kbps
-    val bitRate: Int = 320000,
-    val samplingRate: Int? = null,
+    // 96 Kbps, suitable for speech while keeping storage and encoder work modest
+    val bitRate: Int = 96 * 1000,
+    // 16 kHz is a broadly supported speech sampling rate for AAC
+    val samplingRate: Int? = 16 * 1000,
     val outputFormat: Int? = null,
     val encoder: Int? = null,
     val showAllMicrophones: Boolean = false,

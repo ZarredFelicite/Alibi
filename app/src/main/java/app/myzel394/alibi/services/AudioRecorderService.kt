@@ -23,6 +23,8 @@ class AudioRecorderService :
     override var batchesFolder = AudioBatchesFolder.viaInternalFolder(this)
 
     private val handler = Handler(Looper.getMainLooper())
+    private val amplitudeUpdateRunnable = Runnable { updateAmplitude() }
+    private var amplitudeUpdatesEnabled = false
 
     var amplitudes = mutableListOf<Int>()
         private set
@@ -60,17 +62,19 @@ class AudioRecorderService :
     override fun start() {
         super.start()
 
-        createAmplitudesTimer()
         registerMicrophoneListener()
     }
 
     override fun pause() {
         super.pause()
 
+        stopAmplitudeUpdates()
         resetRecorder()
     }
 
     override suspend fun stop() {
+        stopAmplitudeUpdates()
+        amplitudeUpdatesEnabled = false
         resetRecorder()
         unregisterMicrophoneListener()
 
@@ -79,7 +83,7 @@ class AudioRecorderService :
 
     override fun resume() {
         super.resume()
-        createAmplitudesTimer()
+        scheduleAmplitudeUpdate()
     }
 
     override fun startForegroundService() {
@@ -109,7 +113,7 @@ class AudioRecorderService :
     }
 
     private fun updateAmplitude() {
-        if (state !== RecorderState.RECORDING) {
+        if (!amplitudeUpdatesEnabled || state !== RecorderState.RECORDING) {
             return
         }
 
@@ -125,11 +129,26 @@ class AudioRecorderService :
             }
         }
 
-        handler.postDelayed(::updateAmplitude, 100)
+        scheduleAmplitudeUpdate()
     }
 
-    private fun createAmplitudesTimer() {
-        handler.postDelayed(::updateAmplitude, 100)
+    /** Enable polling only while a visible visualizer is observing the recording. */
+    fun setAmplitudeUpdatesEnabled(enabled: Boolean) {
+        amplitudeUpdatesEnabled = enabled
+        stopAmplitudeUpdates()
+        if (enabled) {
+            scheduleAmplitudeUpdate()
+        }
+    }
+
+    private fun stopAmplitudeUpdates() {
+        handler.removeCallbacks(amplitudeUpdateRunnable)
+    }
+
+    private fun scheduleAmplitudeUpdate() {
+        if (amplitudeUpdatesEnabled && state === RecorderState.RECORDING) {
+            handler.postDelayed(amplitudeUpdateRunnable, 100)
+        }
     }
 
     // ==== Audio device related ====
@@ -178,6 +197,7 @@ class AudioRecorderService :
             // - VOICE_COMMUNICATION: Uses the bottom microphone of the phone (17)
             // - DEFAULT: Uses the bottom microphone of the phone (17)
             setAudioSource(MediaRecorder.AudioSource.MIC)
+            setAudioChannels(1)
 
             when (batchesFolder.type) {
                 BatchesFolder.BatchType.INTERNAL -> {

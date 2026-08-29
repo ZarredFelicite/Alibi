@@ -8,6 +8,7 @@ import androidx.compose.foundation.gestures.rememberTransformableState
 import androidx.compose.foundation.gestures.transformable
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -21,7 +22,10 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import app.myzel394.alibi.ui.MAX_AMPLITUDE
 import app.myzel394.alibi.ui.models.AudioRecorderModel
 import app.myzel394.alibi.ui.utils.clamp
@@ -50,7 +54,7 @@ fun RealtimeAudioVisualizer(
     // box width + gap in 100L
     val animationProgress = remember { Animatable(0f) }
 
-    LaunchedEffect(Unit) {
+    DisposableEffect(Unit) {
         audioRecorder.onAmplitudeChange = {
             scope.launch {
                 animationProgress.snapTo(0f)
@@ -62,6 +66,32 @@ fun RealtimeAudioVisualizer(
                     )
                 )
             }
+        }
+
+        onDispose {
+            audioRecorder.onAmplitudeChange = {}
+        }
+    }
+
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val service = audioRecorder.recorderService
+    DisposableEffect(service, lifecycleOwner) {
+        val lifecycleObserver = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_START -> service?.setAmplitudeUpdatesEnabled(true)
+                Lifecycle.Event.ON_STOP -> service?.setAmplitudeUpdatesEnabled(false)
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(lifecycleObserver)
+
+        if (lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
+            service?.setAmplitudeUpdatesEnabled(true)
+        }
+
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(lifecycleObserver)
+            service?.setAmplitudeUpdatesEnabled(false)
         }
     }
 
