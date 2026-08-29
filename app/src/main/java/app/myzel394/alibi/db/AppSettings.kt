@@ -262,7 +262,7 @@ data class AudioRecorderSettings(
         MediaRecorder.OutputFormat.MPEG_4 -> 44100
         MediaRecorder.OutputFormat.MPEG_2_TS -> 48000
         MediaRecorder.OutputFormat.WEBM -> 48000
-        MediaRecorder.OutputFormat.AMR_NB -> 8000
+        MediaRecorder.OutputFormat.AMR_NB -> AMR_NB_SAMPLE_RATE
         MediaRecorder.OutputFormat.AMR_WB -> 16000
         MediaRecorder.OutputFormat.OGG -> 48000
         else -> 48000
@@ -272,6 +272,25 @@ data class AudioRecorderSettings(
         MediaRecorder.AudioEncoder.AAC
     else
         MediaRecorder.AudioEncoder.AMR_NB
+
+    // AMR-NB only supports its fixed narrowband modes. This also protects the automatic
+    // pre-Oreo AMR-NB fallback from receiving the speech-oriented AAC defaults.
+    fun getEffectiveBitRate(): Int = if (
+        getEncoder() == MediaRecorder.AudioEncoder.AMR_NB &&
+        bitRate !in AMR_NB_SUPPORTED_BIT_RATES
+    ) {
+        AMR_NB_DEFAULT_BIT_RATE
+    } else {
+        bitRate
+    }
+
+    fun getEffectiveSamplingRate(): Int = if (
+        getEncoder() == MediaRecorder.AudioEncoder.AMR_NB
+    ) {
+        AMR_NB_SAMPLE_RATE
+    } else {
+        getSamplingRate()
+    }
 
     fun setBitRate(bitRate: Int): AudioRecorderSettings {
         if (bitRate !in 1000..320000) {
@@ -333,6 +352,19 @@ data class AudioRecorderSettings(
         }
 
     companion object {
+        private const val AMR_NB_SAMPLE_RATE = 8000
+        private const val AMR_NB_DEFAULT_BIT_RATE = 12200
+        private val AMR_NB_SUPPORTED_BIT_RATES = setOf(
+            4750,
+            5150,
+            5900,
+            6700,
+            7400,
+            7950,
+            10200,
+            12200,
+        )
+
         fun getDefaultInstance(): AudioRecorderSettings = AudioRecorderSettings()
         val EXAMPLE_MAX_DURATIONS = listOf(
             1 * 60 * 1000L,

@@ -123,7 +123,9 @@ dependencies {
 
     coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.1.1'
 
-    implementation 'com.arthenica:ffmpeg-kit-full-gpl:5.1'
+    // Original FFmpegKit binaries were removed from Maven Central after upstream retirement.
+    // This maintained drop-in keeps the com.arthenica.ffmpegkit API and full GPL codecs.
+    implementation 'dev.ffmpegkit-maintained:ffmpeg-kit-full-gpl:6.0.3'
 
     implementation "androidx.datastore:datastore-preferences:1.1.1"
 

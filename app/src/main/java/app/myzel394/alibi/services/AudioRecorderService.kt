@@ -238,8 +238,8 @@ class AudioRecorderService :
             setOutputFormat(audioSettings.getOutputFormat())
 
             setAudioEncoder(audioSettings.getEncoder())
-            setAudioEncodingBitRate(audioSettings.bitRate)
-            setAudioSamplingRate(audioSettings.getSamplingRate())
+            setAudioEncodingBitRate(audioSettings.getEffectiveBitRate())
+            setAudioSamplingRate(audioSettings.getEffectiveSamplingRate())
             setOnErrorListener(OnErrorListener { _, _, _ ->
                 onError()
             })
