@@ -8,6 +8,7 @@ import androidx.compose.ui.res.stringResource
 class UpdateSettingsApp: Application() {
     override fun onCreate() {
         super.onCreate()
+        DiagnosticLog.initialize(this)
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             NotificationHelper.createChannels(this)

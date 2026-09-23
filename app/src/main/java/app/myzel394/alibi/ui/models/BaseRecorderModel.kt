@@ -11,6 +11,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
+import app.myzel394.alibi.DiagnosticLog
 import app.myzel394.alibi.db.AppSettings
 import app.myzel394.alibi.enums.RecorderState
 import app.myzel394.alibi.helpers.BatchesFolder
@@ -58,47 +59,80 @@ abstract class BaseRecorderModel<I, B : BatchesFolder, T : IntervalRecorderServi
     abstract var batchesFolder: B?
 
     private var notificationDetails: RecorderNotificationHelper.NotificationDetails? = null
+    private var startGeneration = 0L
+    private var explicitConnection: ServiceConnection? = null
+
+    protected var isExplicitStartConnection = false
+        private set
 
     var settings: AppSettings? = null
         protected set
 
     protected abstract fun onServiceConnected(service: T)
 
-    private val connection = object : ServiceConnection {
+    private val connection = createServiceConnection(isExplicit = false)
+
+    private fun createServiceConnection(
+        isExplicit: Boolean,
+        generation: Long = startGeneration,
+    ) = object : ServiceConnection {
         override fun onServiceConnected(className: ComponentName, service: IBinder) {
-            recorderService =
-                ((service as RecorderService.RecorderBinder).getService() as T).also { recorder ->
-                    // Init variables from us to the service
-                    recorder.onStateChange = { state ->
-                        recorderState = state
-                    }
-                    recorder.onRecordingTimeChange = { time ->
-                        recordingTime = time
-                    }
-                    recorder.onError = {
-                        onError()
-                    }
-                    recorder.onBatchesFolderNotAccessible = {
-                        onBatchesFolderNotAccessible()
-                    }
+            // Ignore a delayed callback from a start request that has since been superseded.
+            if (isExplicit && generation != startGeneration) {
+                DiagnosticLog.log("stale_service_callback_skipped", "service=${intentClass.simpleName}")
+                return
+            }
 
-                    if (batchesFolder != null) {
-                        recorder.batchesFolder = batchesFolder!!
-                    } else {
-                        batchesFolder = recorder.batchesFolder
-                    }
+            val recorder = (service as RecorderService.RecorderBinder).getService() as T
+            DiagnosticLog.log("service_bound", "service=${intentClass.simpleName};mode=${if (isExplicit) "explicit" else "passive"};state=${recorder.state}")
+            recorderService = recorder
 
-                    if (settings != null) {
-                        // If `settings` is set, it means we started the recording, so it should be
-                        // properly set on the service
-                        recorder.settings = settings!!
-                    } else {
-                        settings = recorder.settings
-                    }
+            // Init variables from us to the service
+            recorder.onStateChange = { state ->
+                recorderState = state
+            }
+            recorder.onRecordingTimeChange = { time ->
+                recordingTime = time
+            }
+            recorder.onError = {
+                onError()
+            }
+            recorder.onBatchesFolderNotAccessible = {
+                onBatchesFolderNotAccessible()
+            }
 
-                    // Rest should be initialized from the child class
-                    onServiceConnected(recorder)
-                }
+            if (batchesFolder != null) {
+                recorder.batchesFolder = batchesFolder!!
+            } else {
+                batchesFolder = recorder.batchesFolder
+            }
+
+            if (settings != null) {
+                // If `settings` is set, it means we started the recording, so it should be
+                // properly set on the service
+                recorder.settings = settings!!
+            } else if (recorder.hasInitializedSettings) {
+                settings = recorder.settings
+            }
+
+            isExplicitStartConnection = isExplicit
+            try {
+                // Rest should be initialized from the child class
+                onServiceConnected(recorder)
+            } finally {
+                isExplicitStartConnection = false
+            }
+
+            if (!isExplicit && recorder.state != RecorderState.RECORDING &&
+                recorder.state != RecorderState.PAUSED
+            ) {
+                // An idle or stopped service is not a live recording. Keep it out of the UI and
+                // avoid exposing uninitialized recordingStart/settings to recording status UI.
+                DiagnosticLog.log("stale_service_ignored", "service=${intentClass.simpleName};state=${recorder.state}")
+                recorderService = null
+                recorderState = RecorderState.IDLE
+                recordingTime = 0
+            }
         }
 
         override fun onServiceDisconnected(arg0: ComponentName) {
@@ -117,9 +151,16 @@ abstract class BaseRecorderModel<I, B : BatchesFolder, T : IntervalRecorderServi
     protected open fun handleIntent(intent: Intent) = intent
 
     private fun stopOldServices(context: Context) {
+        startGeneration += 1
         runCatching {
             context.unbindService(connection)
         }
+        explicitConnection?.let { oldConnection ->
+            runCatching {
+                context.unbindService(oldConnection)
+            }
+        }
+        explicitConnection = null
 
         val intent = Intent(context, intentClass)
         runCatching {
@@ -161,7 +202,12 @@ abstract class BaseRecorderModel<I, B : BatchesFolder, T : IntervalRecorderServi
             }
         }.let(::handleIntent)
         ContextCompat.startForegroundService(context, intent)
-        context.bindService(intent, connection, Context.BIND_AUTO_CREATE)
+        val generation = startGeneration
+        val newConnection = createServiceConnection(isExplicit = true, generation = generation)
+        explicitConnection = newConnection
+        if (!context.bindService(intent, newConnection, Context.BIND_AUTO_CREATE)) {
+            explicitConnection = null
+        }
     }
 
     suspend fun stopRecording(context: Context) {
@@ -186,6 +232,7 @@ abstract class BaseRecorderModel<I, B : BatchesFolder, T : IntervalRecorderServi
     // Bind functions used to manually bind to the service if the app
     // is closed and reopened for example
     fun bindToService(context: Context) {
+        DiagnosticLog.log("service_bind_requested", "service=${intentClass.simpleName};mode=passive")
         Intent(context, intentClass).also { intent ->
             context.bindService(intent, connection, 0)
         }
@@ -195,5 +242,11 @@ abstract class BaseRecorderModel<I, B : BatchesFolder, T : IntervalRecorderServi
         runCatching {
             context.unbindService(connection)
         }
+        explicitConnection?.let { activeConnection ->
+            runCatching {
+                context.unbindService(activeConnection)
+            }
+        }
+        explicitConnection = null
     }
 }

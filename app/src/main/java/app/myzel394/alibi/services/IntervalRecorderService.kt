@@ -1,5 +1,6 @@
 package app.myzel394.alibi.services
 
+import app.myzel394.alibi.DiagnosticLog
 import app.myzel394.alibi.db.AppSettings
 import app.myzel394.alibi.helpers.BatchesFolder
 import java.util.concurrent.Executors
@@ -15,6 +16,9 @@ abstract class IntervalRecorderService<I, B : BatchesFolder> :
     private var lockedIndex: Long? = null
 
     lateinit var settings: AppSettings
+
+    val hasInitializedSettings: Boolean
+        get() = this::settings.isInitialized
 
     private lateinit var cycleTimer: ScheduledExecutorService
 
@@ -47,13 +51,23 @@ abstract class IntervalRecorderService<I, B : BatchesFolder> :
     // Make overrideable
     open fun startNewCycle() {
         counter += 1
+        if (counter % 12L == 0L) {
+            DiagnosticLog.log("recording_cycle_checkpoint", "service=${javaClass.simpleName};cycle=$counter")
+        }
         deleteOldRecordings()
     }
 
     private fun createTimer() {
         cycleTimer = Executors.newSingleThreadScheduledExecutor().also {
             it.scheduleAtFixedRate(
-                ::startNewCycle,
+                {
+                    try {
+                        startNewCycle()
+                    } catch (error: Throwable) {
+                        DiagnosticLog.logException("recording_cycle_failure", error)
+                        throw error
+                    }
+                },
                 0,
                 settings.intervalDuration,
                 TimeUnit.MILLISECONDS

@@ -7,6 +7,7 @@ import android.os.Binder
 import android.os.IBinder
 import androidx.core.app.NotificationManagerCompat
 import androidx.lifecycle.LifecycleService
+import app.myzel394.alibi.DiagnosticLog
 import app.myzel394.alibi.NotificationHelper
 import app.myzel394.alibi.enums.RecorderState
 import app.myzel394.alibi.ui.utils.PermissionHelper
@@ -57,6 +58,7 @@ abstract class RecorderService : LifecycleService() {
     protected abstract fun startForegroundService()
 
     fun startRecording() {
+        DiagnosticLog.log("recording_start", "service=${javaClass.simpleName}")
         recordingStart = LocalDateTime.now()
 
         startForegroundService()
@@ -65,6 +67,7 @@ abstract class RecorderService : LifecycleService() {
         try {
             start()
         } catch (error: RuntimeException) {
+            DiagnosticLog.logException("recording_start_failure", error)
             error.printStackTrace()
 
             if (error !is AvoidErrorDialogError) {
@@ -93,12 +96,29 @@ abstract class RecorderService : LifecycleService() {
         stopSelf()
     }
 
+    override fun onCreate() {
+        super.onCreate()
+        DiagnosticLog.log("service_create", "service=${javaClass.simpleName}")
+    }
+
+    override fun onDestroy() {
+        DiagnosticLog.log("service_destroy", "service=${javaClass.simpleName};state=$state")
+        super.onDestroy()
+    }
+
     override fun onBind(intent: Intent): IBinder? {
         super.onBind(intent)
         return binder
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val action = when (intent?.action) {
+            "init" -> "init"
+            "changeState" -> "changeState"
+            null -> "null"
+            else -> "other"
+        }
+        DiagnosticLog.log("service_start_command", "service=${javaClass.simpleName};action=$action")
         when (intent?.action) {
             "init" -> {
                 notificationDetails = intent.getStringExtra("notificationDetails")?.let {
@@ -147,7 +167,9 @@ abstract class RecorderService : LifecycleService() {
             return
         }
 
+        val previousState = state
         state = newState
+        DiagnosticLog.log("recording_transition", "service=${javaClass.simpleName};from=$previousState;to=$newState")
         when (newState) {
             RecorderState.RECORDING -> {
                 if (isPaused) {
