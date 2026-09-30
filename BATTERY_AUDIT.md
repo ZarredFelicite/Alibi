@@ -28,9 +28,17 @@ Re-entry, pause and resume passed. RAM mode created no numeric files during 30 s
 
 Limits: one short emulator pair, approximately matched warmup (nine-second difference), debug builds and quiet synthetic input. App-process counters exclude Android media-service encoding/I/O; no rotation occurred within the paired sample. **These numbers are not battery-life gains or whole-device power measurements.** Nonzero visualizer response was not established on the quiet emulator, though return/pause/resume and encoded output worked. Scoped/custom backend indexing was inspected and pure index failure/retry tests passed; filesystem/runtime retention tests used internal storage, not every provider or camera.
 
-Temporary evidence: `/tmp/alibi-bg-baseline-results.json`, `/tmp/alibi-bg-candidate-results.json`, `/tmp/alibi-bg-candidate-build.log`, `/tmp/alibi-bg-candidate-instrumentation.log`; Gradle XML results remain in the worktree's ignored `app/build/test-results/testDebugUnitTest/`.
+Temporary evidence: `/tmp/alibi-bg-baseline-results.json`, `/tmp/alibi-bg-candidate-results.json`, `/tmp/alibi-bg-candidate-build.log`, `/tmp/alibi-bg-candidate-instrumentation.log`; candidate APKs and Gradle XML results were preserved under `/tmp/alibi-background-efficiency-evidence-68dfba3/` before removing the merged feature worktree.
 
 Workflow corrections: an initial SDK expression requested unnecessary emulator/image dependencies and hit its bounded timeout; it was narrowed to compile tools and the existing emulator reused. A worker initially edited four main-checkout files; its task-owned edits were backed up under `/tmp/alibi-root-save-worker-backup` and main restored, with final corrections retained in the worktree. Suggested safeguards are a dependency dry-run before provisioning and asserting the allowed worktree prefix before every edit. No agent-instruction changes were made. A scratch export test originally stopped before the picker completed; correcting that sequencing produced a fully decoded export without production changes.
+
+## Approved phone deployment — 2026-09-30
+
+- PR #1 merged into `optimize/audio-battery`; release built from merge commit `b5849ce26b25509963a8d6013b58991e6e01727a`. The merged production tree matches the tested implementation.
+- Signed ARM64 release build passed. Updated existing `app.myzel394.alibi` on the Pixel 8 Pro using `adb install -r`; no uninstall or data-clear command was used. Version remains `0.5.3` / code `16`.
+- Installed APK SHA-256 exactly matches the build: `e87aefcfd4d0b22dfa12551bcf14406dca194b37fa8378c94ace6914e15f3840`. Old/new APK signing certificates match; package UID, data directory and existing permission grants were retained.
+- Previous installed APK preserved at `/tmp/alibi-pre-background-deploy.apk`; build log at `/tmp/alibi-bg-release-build.log`. Release private data is not accessible through `run-as`, so a content-level backup/comparison was not possible; Android's in-place update retained the existing app-data directory.
+- App launch returned successfully, the process stayed alive and no startup fatal/ANR was observed. Screenshot inspection showed the phone's lock screen, **not the app UI**; visible startup verification awaits unlocking. No physical recording or battery benchmark was performed.
 
 ## Background-only priorities (user's clarified scope)
 
