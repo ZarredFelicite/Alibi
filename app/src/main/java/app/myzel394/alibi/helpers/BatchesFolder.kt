@@ -10,6 +10,7 @@ import android.os.Build
 import android.os.Environment
 import android.os.ParcelFileDescriptor
 import android.os.storage.StorageManager
+import android.provider.DocumentsContract
 import android.provider.MediaStore
 import android.provider.MediaStore.Video.Media
 import android.system.Os
@@ -46,6 +47,93 @@ abstract class BatchesFolder(
     val mediaPrefix
         get() = MEDIA_RECORDINGS_PREFIX + subfolderName.substring(1) + "-"
 
+    private class BatchReference(val counter: Long, val key: String, val delete: () -> Boolean) {
+        override fun equals(other: Any?) = other is BatchReference && key == other.key
+        override fun hashCode() = key.hashCode()
+    }
+    private val retentionIndex = BatchRetentionIndex<BatchReference>()
+    private val retentionIndexLock = Any()
+
+    private fun numericCounter(name: String?): Long? {
+        val stem = name?.substringBeforeLast(".") ?: return null
+        return if (type == BatchType.MEDIA) {
+            if (stem.startsWith(mediaPrefix)) stem.removePrefix(mediaPrefix).toLongOrNull() else null
+        } else stem.toLongOrNull()
+    }
+
+    private fun referenceForFile(counter: Long, file: File) = BatchReference(counter, file.absolutePath) {
+        !file.exists() || file.delete()
+    }
+
+    private fun referenceForDocument(counter: Long, file: DocumentFile) = BatchReference(counter, file.uri.toString()) {
+        runCatching { file.delete() }.getOrDefault(false) || documentUriExists(file.uri) == false
+    }
+
+    private fun documentUriExists(uri: Uri): Boolean? = try {
+        context.contentResolver.query(
+            uri,
+            arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID),
+            null,
+            null,
+            null,
+        )?.use { it.moveToFirst() }
+    } catch (_: Exception) { null }
+
+    protected fun registerBatch(name: String, file: File? = null, document: DocumentFile? = null) {
+        val counter = numericCounter(name) ?: return
+        val ref = when {
+            file != null -> referenceForFile(counter, file)
+            document != null -> referenceForDocument(counter, document)
+            type == BatchType.MEDIA && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q ->
+                referenceForMediaName(counter, name)
+            else -> return
+        }
+        synchronized(retentionIndexLock) { retentionIndex.register(counter, ref) }
+    }
+
+    @RequiresApi(Build.VERSION_CODES.Q)
+    private fun referenceForMediaName(counter: Long, name: String) = BatchReference(counter, name) {
+        val selection = "${MediaStore.MediaColumns.DISPLAY_NAME} = ?"
+        val deleted = context.contentResolver.delete(scopedMediaContentUri, selection, arrayOf(name)) > 0
+        deleted || mediaNameExists(name) == false
+    }
+
+    @RequiresApi(Build.VERSION_CODES.Q)
+    private fun mediaNameExists(name: String): Boolean? = try {
+        context.contentResolver.query(
+            scopedMediaContentUri,
+            arrayOf(MediaStore.MediaColumns._ID),
+            "${MediaStore.MediaColumns.DISPLAY_NAME} = ?",
+            arrayOf(name),
+            null,
+        )?.use { it.moveToFirst() }
+    } catch (_: Exception) { null }
+
+    private fun ensureRetentionIndex() = synchronized(retentionIndexLock) {
+        if (retentionIndex.isInitialized) return@synchronized
+        val references = mutableListOf<Pair<Long, BatchReference>>()
+        when (type) {
+            BatchType.INTERNAL -> getInternalFolder().listFiles()?.forEach { file ->
+                numericCounter(file.name)?.let { references += it to referenceForFile(it, file) }
+            }
+            BatchType.CUSTOM -> getCustomDefinedFolder().listFiles().forEach { file ->
+                numericCounter(file.name)?.let { references += it to referenceForDocument(it, file) }
+            }
+            BatchType.MEDIA -> if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                queryMediaContent { rawName, counter, _, _ ->
+                    val value = counter.toLong()
+                    references += value to referenceForMediaName(value, rawName)
+                    Unit
+                }
+            } else {
+                legacyMediaFolder.listFiles()?.forEach { file ->
+                    numericCounter(file.name)?.let { references += it to referenceForFile(it, file) }
+                }
+            }
+        }
+        retentionIndex.replaceAll(references)
+    }
+
     fun initFolders() {
         when (type) {
             BatchType.INTERNAL -> getInternalFolder().mkdirs()
@@ -80,7 +168,7 @@ abstract class BatchesFolder(
     ) {
         context.contentResolver.query(
             scopedMediaContentUri,
-            null,
+            arrayOf(MediaStore.MediaColumns.DISPLAY_NAME, MediaStore.MediaColumns._ID),
             "${MediaStore.MediaColumns.DISPLAY_NAME} LIKE '$mediaPrefix%'",
             null,
             null,
@@ -200,6 +288,7 @@ abstract class BatchesFolder(
         name
     ).apply {
         createNewFile()
+        registerBatch(name, file = this)
     }
 
     fun checkIfOutputAlreadyExists(
@@ -304,6 +393,7 @@ abstract class BatchesFolder(
     }
 
     fun deleteRecordings() {
+        synchronized(retentionIndexLock) { retentionIndex.invalidate() }
         // Currently deletes all recordings.
         // This is fine, because we are saving the recordings
         // in a dedicated subfolder
@@ -330,6 +420,7 @@ abstract class BatchesFolder(
                 }
             }
         }
+        synchronized(retentionIndexLock) { retentionIndex.invalidate() }
     }
 
     fun hasRecordingsAvailable(): Boolean {
@@ -364,65 +455,9 @@ abstract class BatchesFolder(
     }
 
     fun deleteRecordings(range: LongRange) {
-        when (type) {
-            BatchType.INTERNAL -> getInternalFolder().listFiles()?.forEach {
-                val fileCounter = it.nameWithoutExtension.toIntOrNull() ?: return@forEach
-
-                if (fileCounter in range) {
-                    it.delete()
-                }
-            }
-
-            BatchType.CUSTOM -> getCustomDefinedFolder().listFiles().forEach {
-                val fileCounter = it.name?.substringBeforeLast(".")?.toIntOrNull() ?: return@forEach
-
-                if (fileCounter in range) {
-                    it.delete()
-                }
-            }
-
-            BatchType.MEDIA -> {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    val deletableNames = mutableListOf<String>()
-
-                    queryMediaContent { rawName, counter, _, _ ->
-                        if (counter in range) {
-                            deletableNames.add(rawName)
-                        }
-                    }
-
-                    try {
-                        context.contentResolver.delete(
-                            scopedMediaContentUri,
-                            "${MediaStore.MediaColumns.DISPLAY_NAME} IN (${
-                                deletableNames.joinToString(
-                                    ","
-                                ) { "'$it'" }
-                            })",
-                            null,
-                        )
-                        // This is unfortunate if the files can't be deleted, but let's just
-                        // ignore it since we can't do anything about it
-                    } catch (e: RuntimeException) {
-                        // Probably file not found
-                        e.printStackTrace()
-                    } catch (e: IllegalArgumentException) {
-                        // Strange filename, should not happen
-                        e.printStackTrace()
-                    }
-                } else {
-                    // TODO: Fix "would you like to try saving" -> Save button
-                    legacyMediaFolder.listFiles()?.forEach {
-                        val fileCounter =
-                            it.nameWithoutExtension.substring(mediaPrefix.length).toIntOrNull()
-                                ?: return@forEach
-
-                        if (fileCounter in range) {
-                            it.delete()
-                        }
-                    }
-                }
-            }
+        ensureRetentionIndex()
+        synchronized(retentionIndexLock) {
+            retentionIndex.prune(range) { it.delete() }
         }
     }
 
@@ -453,7 +488,9 @@ abstract class BatchesFolder(
     }
 
     fun asInternalGetFile(counter: Long, fileExtension: String): File {
-        return File(getInternalFolder(), "$counter.$fileExtension")
+        val file = File(getInternalFolder(), "$counter.$fileExtension")
+        registerBatch(file.name, file = file)
+        return file
     }
 
     @RequiresApi(Build.VERSION_CODES.Q)
@@ -513,6 +550,7 @@ abstract class BatchesFolder(
             }
         }
 
+        registerBatch(name)
         return uri!!
     }
 

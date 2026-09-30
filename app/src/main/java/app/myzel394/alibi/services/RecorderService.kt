@@ -5,6 +5,7 @@ import android.app.Notification
 import android.content.Intent
 import android.os.Binder
 import android.os.IBinder
+import android.os.SystemClock
 import androidx.core.app.NotificationManagerCompat
 import androidx.lifecycle.LifecycleService
 import app.myzel394.alibi.DiagnosticLog
@@ -13,9 +14,6 @@ import app.myzel394.alibi.enums.RecorderState
 import app.myzel394.alibi.ui.utils.PermissionHelper
 import kotlinx.serialization.json.Json
 import java.time.LocalDateTime
-import java.util.concurrent.Executors
-import java.util.concurrent.ScheduledExecutorService
-import java.util.concurrent.TimeUnit
 
 
 abstract class RecorderService : LifecycleService() {
@@ -24,7 +22,7 @@ abstract class RecorderService : LifecycleService() {
     private var isPaused: Boolean = false
     lateinit var recordingStart: LocalDateTime
         private set
-    private lateinit var recordingTimeTimer: ScheduledExecutorService
+    private val activeRecordingTime = ActiveRecordingTime(SystemClock::elapsedRealtimeNanos)
     private var notificationDetails: RecorderNotificationHelper.NotificationDetails? = null
 
     var state = RecorderState.IDLE
@@ -32,27 +30,25 @@ abstract class RecorderService : LifecycleService() {
 
     var onStateChange: ((RecorderState) -> Unit)? = null
     var onError: () -> Unit = {}
-    var onRecordingTimeChange: ((Long) -> Unit)? = null
 
-    var recordingTime = 0L
-        private set
+    val recordingTime: Long
+        get() = activeRecordingTime.elapsedSeconds
 
     protected open fun start() {
-        createRecordingTimeTimer()
+        activeRecordingTime.start()
     }
 
     protected open fun pause() {
         isPaused = true
-
-        recordingTimeTimer.shutdown()
+        activeRecordingTime.pause()
     }
 
     protected open fun resume() {
-        createRecordingTimeTimer()
+        activeRecordingTime.start()
     }
 
     protected open suspend fun stop() {
-        recordingTimeTimer.shutdown()
+        activeRecordingTime.stop()
     }
 
     protected abstract fun startForegroundService()
@@ -77,6 +73,7 @@ abstract class RecorderService : LifecycleService() {
     }
 
     suspend fun stopRecording() {
+        activeRecordingTime.stop()
         changeState(RecorderState.STOPPED)
         stop()
     }
@@ -142,20 +139,6 @@ abstract class RecorderService : LifecycleService() {
 
     inner class RecorderBinder : Binder() {
         fun getService(): RecorderService = this@RecorderService
-    }
-
-    private fun createRecordingTimeTimer() {
-        recordingTimeTimer = Executors.newSingleThreadScheduledExecutor().also {
-            it.scheduleAtFixedRate(
-                {
-                    recordingTime += 1
-                    onRecordingTimeChange?.invoke(recordingTime)
-                },
-                0,
-                1,
-                TimeUnit.SECONDS
-            )
-        }
     }
 
     // Used to change the state of the service

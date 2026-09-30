@@ -90,10 +90,9 @@ abstract class BaseRecorderModel<I, B : BatchesFolder, T : IntervalRecorderServi
             // Init variables from us to the service
             recorder.onStateChange = { state ->
                 recorderState = state
+                recordingTime = recorder.recordingTime
             }
-            recorder.onRecordingTimeChange = { time ->
-                recordingTime = time
-            }
+            recordingTime = recorder.recordingTime
             recorder.onError = {
                 onError()
             }
@@ -236,6 +235,11 @@ abstract class BaseRecorderModel<I, B : BatchesFolder, T : IntervalRecorderServi
         Intent(context, intentClass).also { intent ->
             context.bindService(intent, connection, 0)
         }
+    }
+
+    /** Refreshes elapsed time when the recorder UI is visible. */
+    fun refreshRecordingTime() {
+        recordingTime = recorderService?.recordingTime ?: 0L
     }
 
     fun unbindFromService(context: Context) {

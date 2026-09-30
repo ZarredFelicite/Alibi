@@ -103,6 +103,7 @@ class VideoBatchesFolder(
                 "video/$fileExtension",
                 "$counter.$fileExtension"
             )!!
+        registerBatch(file.name ?: "$counter.$fileExtension", document = file)
         val resolver = context.contentResolver.acquireContentProviderClient(file.uri)!!
 
         resolver.use {
@@ -114,6 +115,8 @@ class VideoBatchesFolder(
 
     @RequiresApi(Build.VERSION_CODES.Q)
     fun asMediaGetScopedStorageContentValues(name: String) = ContentValues().apply {
+        // CameraX creates the MediaStore row after preparation; track it by display name now.
+        registerBatch(name)
         put(
             MediaStore.Video.Media.IS_PENDING,
             1

@@ -29,9 +29,18 @@ class EncodedAudioFrameRingBuffer(
 
     fun add(presentationTimeUs: Long, data: ByteArray) {
         if (data.isEmpty() || data.size > maxBytes) return
+        addFrame(presentationTimeUs, data.copyOf())
+    }
 
+    /** Stores [data] without copying; the caller must relinquish ownership and never mutate it. */
+    internal fun addOwned(presentationTimeUs: Long, data: ByteArray) {
+        if (data.isEmpty() || data.size > maxBytes) return
+        addFrame(presentationTimeUs, data)
+    }
+
+    private fun addFrame(presentationTimeUs: Long, data: ByteArray) {
         synchronized(this) {
-            val frame = Frame(presentationTimeUs, data.copyOf())
+            val frame = Frame(presentationTimeUs, data)
             frames.addLast(frame)
             byteCount += frame.data.size
 

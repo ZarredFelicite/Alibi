@@ -25,7 +25,9 @@ class AudioRecorderService :
 
     private val handler = Handler(Looper.getMainLooper())
     private val amplitudeUpdateRunnable = Runnable { updateAmplitude() }
+    @Volatile
     private var amplitudeUpdatesEnabled = false
+    private val ramAmplitudeLock = Any()
     private var ramCapture: RamAudioCapture? = null
     private var ramBuffer: EncodedAudioFrameRingBuffer? = null
     private var ramMode = false
@@ -97,7 +99,10 @@ class AudioRecorderService :
 
     override suspend fun stop() {
         stopAmplitudeUpdates()
-        amplitudeUpdatesEnabled = false
+        synchronized(ramAmplitudeLock) {
+            amplitudeUpdatesEnabled = false
+            ramAmplitude = 0
+        }
         if (ramMode) stopRamCapture() else resetRecorder()
         unregisterMicrophoneListener()
 
@@ -164,7 +169,10 @@ class AudioRecorderService :
 
     /** Enable polling only while a visible visualizer is observing the recording. */
     fun setAmplitudeUpdatesEnabled(enabled: Boolean) {
-        amplitudeUpdatesEnabled = enabled
+        synchronized(ramAmplitudeLock) {
+            amplitudeUpdatesEnabled = enabled
+            ramAmplitude = 0
+        }
         stopAmplitudeUpdates()
         if (enabled) {
             scheduleAmplitudeUpdate()
@@ -206,7 +214,12 @@ class AudioRecorderService :
             RamAudioCapture(
                 audioSettings = audioSettings,
                 buffer = buffer,
-                onAmplitude = { ramAmplitude = it },
+                shouldReportAmplitude = { amplitudeUpdatesEnabled },
+                onAmplitude = {
+                    synchronized(ramAmplitudeLock) {
+                        if (amplitudeUpdatesEnabled) ramAmplitude = it
+                    }
+                },
                 onError = { handleRamCaptureError() },
                 startPresentationTimeUs = ramNextPresentationTimeUs,
             ).also {

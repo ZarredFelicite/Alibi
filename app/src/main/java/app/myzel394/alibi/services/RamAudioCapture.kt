@@ -14,6 +14,7 @@ import kotlin.math.abs
 class RamAudioCapture(
     private val audioSettings: AudioRecorderSettings,
     val buffer: EncodedAudioFrameRingBuffer,
+    private val shouldReportAmplitude: () -> Boolean,
     private val onAmplitude: (Int) -> Unit,
     private val onError: (Throwable) -> Unit,
     private val startPresentationTimeUs: Long,
@@ -27,6 +28,8 @@ class RamAudioCapture(
     private lateinit var audioRecord: AudioRecord
     private lateinit var codec: MediaCodec
     private lateinit var worker: Thread
+    private val sampleRate = audioSettings.getEffectiveSamplingRate()
+    private val outputBufferInfo = MediaCodec.BufferInfo()
     private var framesRead = 0L
     private var encoderEnded = false
 
@@ -35,7 +38,6 @@ class RamAudioCapture(
         private set
 
     init {
-        val sampleRate = audioSettings.getEffectiveSamplingRate()
         val minimumBufferSize = AudioRecord.getMinBufferSize(
             sampleRate,
             AudioFormat.CHANNEL_IN_MONO,
@@ -147,13 +149,14 @@ class RamAudioCapture(
                     input.clear()
                     val bytesRead = audioRecord.read(input, minOf(input.remaining(), maxReadBytes))
                     if (bytesRead > 0) {
-                        val amplitude = peakAmplitude(input, bytesRead)
+                        if (shouldReportAmplitude()) {
+                            onAmplitude(peakAmplitude(input, bytesRead))
+                        }
                         val presentationTimeUs = AudioCaptureTimestamps.atSample(
                             startPresentationTimeUs,
                             framesRead,
-                            audioSettings.getEffectiveSamplingRate(),
+                            sampleRate,
                         )
-                        onAmplitude(amplitude)
                         codec.queueInputBuffer(
                             inputIndex,
                             0,
@@ -165,7 +168,7 @@ class RamAudioCapture(
                         nextPresentationTimeUs = AudioCaptureTimestamps.atSample(
                             startPresentationTimeUs,
                             framesRead,
-                            audioSettings.getEffectiveSamplingRate(),
+                            sampleRate,
                         )
                     } else if (bytesRead < 0) {
                         throw IllegalStateException("AudioRecord read failed: $bytesRead")
@@ -205,7 +208,7 @@ class RamAudioCapture(
     }
 
     private fun drainEncoder(): Boolean {
-        val info = MediaCodec.BufferInfo()
+        val info = outputBufferInfo
         var drained = false
         while (true) {
             val outputIndex = codec.dequeueOutputBuffer(info, 0)
@@ -223,7 +226,7 @@ class RamAudioCapture(
                         if ((info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0) {
                             buffer.setCodecConfig(data)
                         } else {
-                            buffer.add(info.presentationTimeUs, data)
+                            buffer.addOwned(info.presentationTimeUs, data)
                         }
                     }
                     codec.releaseOutputBuffer(outputIndex, false)

@@ -101,6 +101,7 @@ class AudioBatchesFolder(
 
         val file =
             getCustomDefinedFolder().createFile("audio/$fileExtension", "$counter.$fileExtension")!!
+        registerBatch(file.name ?: "$counter.$fileExtension", document = file)
 
         customFileFileDescriptor = context.contentResolver.openFileDescriptor(file.uri, "w")!!
 
