@@ -16,13 +16,17 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.res.stringResource
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import app.myzel394.alibi.R
 import app.myzel394.alibi.db.AppSettings
 import app.myzel394.alibi.db.RecordingInformation
@@ -32,6 +36,7 @@ import app.myzel394.alibi.ui.components.RecorderScreen.organisms.StartRecording
 import app.myzel394.alibi.ui.components.RecorderScreen.organisms.VideoRecordingStatus
 import app.myzel394.alibi.ui.models.AudioRecorderModel
 import app.myzel394.alibi.ui.models.VideoRecorderModel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -44,6 +49,21 @@ fun RecorderScreen(
 ) {
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    val hasActiveRecorder =
+        audioRecorder.isCurrentlyActivelyRecording || videoRecorder.isCurrentlyActivelyRecording
+
+    LaunchedEffect(lifecycle, hasActiveRecorder) {
+        if (hasActiveRecorder) {
+            lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                while (true) {
+                    audioRecorder.refreshRecordingTime()
+                    videoRecorder.refreshRecordingTime()
+                    delay(1_000)
+                }
+            }
+        }
+    }
 
     RecorderEventsHandler(
         settings = settings,

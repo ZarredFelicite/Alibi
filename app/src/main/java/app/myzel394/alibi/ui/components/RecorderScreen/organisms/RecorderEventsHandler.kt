@@ -18,9 +18,11 @@ import app.myzel394.alibi.R
 import app.myzel394.alibi.dataStore
 import app.myzel394.alibi.db.AppSettings
 import app.myzel394.alibi.db.RecordingInformation
+import app.myzel394.alibi.enums.RecorderState
 import app.myzel394.alibi.helpers.AudioBatchesFolder
 import app.myzel394.alibi.helpers.BatchesFolder
 import app.myzel394.alibi.helpers.VideoBatchesFolder
+import app.myzel394.alibi.services.ActiveSaveLock
 import app.myzel394.alibi.services.IntervalRecorderService
 import app.myzel394.alibi.ui.components.RecorderScreen.atoms.BatchesInaccessibleDialog
 import app.myzel394.alibi.ui.components.RecorderScreen.atoms.RecorderErrorDialog
@@ -151,14 +153,19 @@ fun RecorderEventsHandler(
 
         thread {
             runBlocking {
+                val recorderService = recorder.recorderService
+                val initialRecorderState = recorder.recorderState
+                val wasLiveRecording = initialRecorderState == RecorderState.RECORDING ||
+                        initialRecorderState == RecorderState.PAUSED
+                var saveLock: ActiveSaveLock? = null
                 try {
-                    if (recorder.isCurrentlyActivelyRecording) {
-                        recorder.recorderService?.lockFiles()
+                    if (wasLiveRecording) {
+                        saveLock = recorderService?.lockFiles()
                     }
 
                     val recording =
                         // When new recording created
-                        recorder.recorderService?.getRecordingInformation()
+                        recorderService?.getRecordingInformation()
                         // When recording is loaded from lastRecording
                             ?: settings.lastRecording
                             ?: throw Exception("No recording information available")
@@ -213,7 +220,11 @@ fun RecorderEventsHandler(
                             showSnackbar(batchesFolder.customFolder!!.uri)
 
                             if (settings.deleteRecordingsImmediately) {
-                                batchesFolder.deleteRecordings()
+                                if (wasLiveRecording) {
+                                    recorderService?.deleteRecordingsForSave(saveLock)
+                                } else {
+                                    batchesFolder.deleteRecordings()
+                                }
                             }
                         }
 
@@ -221,16 +232,18 @@ fun RecorderEventsHandler(
                             showSnackbar()
 
                             if (settings.deleteRecordingsImmediately) {
-                                batchesFolder.deleteRecordings()
+                                if (wasLiveRecording) {
+                                    recorderService?.deleteRecordingsForSave(saveLock)
+                                } else {
+                                    batchesFolder.deleteRecordings()
+                                }
                             }
                         }
                     }
                 } catch (error: Exception) {
                     Log.getStackTraceString(error)
                 } finally {
-                    if (recorder.isCurrentlyActivelyRecording) {
-                        recorder.recorderService?.unlockFiles(cleanupOldFiles)
-                    }
+                    recorderService?.unlockFiles(saveLock, cleanupOldFiles)
                     timer.cancel()
                     isProcessing = false
                     processingProgress = null

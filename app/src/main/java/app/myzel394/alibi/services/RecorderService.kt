@@ -5,16 +5,15 @@ import android.app.Notification
 import android.content.Intent
 import android.os.Binder
 import android.os.IBinder
+import android.os.SystemClock
 import androidx.core.app.NotificationManagerCompat
 import androidx.lifecycle.LifecycleService
+import app.myzel394.alibi.DiagnosticLog
 import app.myzel394.alibi.NotificationHelper
 import app.myzel394.alibi.enums.RecorderState
 import app.myzel394.alibi.ui.utils.PermissionHelper
 import kotlinx.serialization.json.Json
 import java.time.LocalDateTime
-import java.util.concurrent.Executors
-import java.util.concurrent.ScheduledExecutorService
-import java.util.concurrent.TimeUnit
 
 
 abstract class RecorderService : LifecycleService() {
@@ -23,7 +22,7 @@ abstract class RecorderService : LifecycleService() {
     private var isPaused: Boolean = false
     lateinit var recordingStart: LocalDateTime
         private set
-    private lateinit var recordingTimeTimer: ScheduledExecutorService
+    private val activeRecordingTime = ActiveRecordingTime(SystemClock::elapsedRealtimeNanos)
     private var notificationDetails: RecorderNotificationHelper.NotificationDetails? = null
 
     var state = RecorderState.IDLE
@@ -31,32 +30,31 @@ abstract class RecorderService : LifecycleService() {
 
     var onStateChange: ((RecorderState) -> Unit)? = null
     var onError: () -> Unit = {}
-    var onRecordingTimeChange: ((Long) -> Unit)? = null
 
-    var recordingTime = 0L
-        private set
+    val recordingTime: Long
+        get() = activeRecordingTime.elapsedSeconds
 
     protected open fun start() {
-        createRecordingTimeTimer()
+        activeRecordingTime.start()
     }
 
     protected open fun pause() {
         isPaused = true
-
-        recordingTimeTimer.shutdown()
+        activeRecordingTime.pause()
     }
 
     protected open fun resume() {
-        createRecordingTimeTimer()
+        activeRecordingTime.start()
     }
 
     protected open suspend fun stop() {
-        recordingTimeTimer.shutdown()
+        activeRecordingTime.stop()
     }
 
     protected abstract fun startForegroundService()
 
     fun startRecording() {
+        DiagnosticLog.log("recording_start", "service=${javaClass.simpleName}")
         recordingStart = LocalDateTime.now()
 
         startForegroundService()
@@ -65,6 +63,7 @@ abstract class RecorderService : LifecycleService() {
         try {
             start()
         } catch (error: RuntimeException) {
+            DiagnosticLog.logException("recording_start_failure", error)
             error.printStackTrace()
 
             if (error !is AvoidErrorDialogError) {
@@ -74,6 +73,7 @@ abstract class RecorderService : LifecycleService() {
     }
 
     suspend fun stopRecording() {
+        activeRecordingTime.stop()
         changeState(RecorderState.STOPPED)
         stop()
     }
@@ -93,12 +93,29 @@ abstract class RecorderService : LifecycleService() {
         stopSelf()
     }
 
+    override fun onCreate() {
+        super.onCreate()
+        DiagnosticLog.log("service_create", "service=${javaClass.simpleName}")
+    }
+
+    override fun onDestroy() {
+        DiagnosticLog.log("service_destroy", "service=${javaClass.simpleName};state=$state")
+        super.onDestroy()
+    }
+
     override fun onBind(intent: Intent): IBinder? {
         super.onBind(intent)
         return binder
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val action = when (intent?.action) {
+            "init" -> "init"
+            "changeState" -> "changeState"
+            null -> "null"
+            else -> "other"
+        }
+        DiagnosticLog.log("service_start_command", "service=${javaClass.simpleName};action=$action")
         when (intent?.action) {
             "init" -> {
                 notificationDetails = intent.getStringExtra("notificationDetails")?.let {
@@ -124,20 +141,6 @@ abstract class RecorderService : LifecycleService() {
         fun getService(): RecorderService = this@RecorderService
     }
 
-    private fun createRecordingTimeTimer() {
-        recordingTimeTimer = Executors.newSingleThreadScheduledExecutor().also {
-            it.scheduleAtFixedRate(
-                {
-                    recordingTime += 1
-                    onRecordingTimeChange?.invoke(recordingTime)
-                },
-                0,
-                1,
-                TimeUnit.SECONDS
-            )
-        }
-    }
-
     // Used to change the state of the service
     // will internally call start() / pause() / resume() / stop()
     // Immediately after creating the service make sure to call `changeState(RecorderState.RECORDING)`
@@ -147,7 +150,9 @@ abstract class RecorderService : LifecycleService() {
             return
         }
 
+        val previousState = state
         state = newState
+        DiagnosticLog.log("recording_transition", "service=${javaClass.simpleName};from=$previousState;to=$newState")
         when (newState) {
             RecorderState.RECORDING -> {
                 if (isPaused) {

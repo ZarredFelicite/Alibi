@@ -11,7 +11,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -30,24 +29,13 @@ import app.myzel394.alibi.ui.components.RecorderScreen.molecules.RecordingContro
 import app.myzel394.alibi.ui.components.RecorderScreen.molecules.RecordingStatus
 import app.myzel394.alibi.ui.models.AudioRecorderModel
 import app.myzel394.alibi.ui.utils.KeepScreenOn
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import java.time.LocalDateTime
 
 @Composable
 fun AudioRecordingStatus(
     audioRecorder: AudioRecorderModel,
 ) {
     val configuration = LocalConfiguration.current.orientation
-
-    var now by remember { mutableStateOf(LocalDateTime.now()) }
-
-    LaunchedEffect(Unit) {
-        while (true) {
-            now = LocalDateTime.now()
-            delay(900)
-        }
-    }
 
     KeepScreenOn()
     Column(

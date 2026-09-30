@@ -48,6 +48,31 @@ class EncodedAudioFrameRingBufferTest {
     }
 
     @Test
+    fun publicAddAndSnapshotsAreDefensiveCopies() {
+        val ring = EncodedAudioFrameRingBuffer(maxDurationUs = 1_000, maxBytes = 100)
+        val input = byteArrayOf(1, 2)
+        ring.add(0, input)
+        input[0] = 9
+
+        val firstSnapshot = ring.snapshot()
+        assertArrayEquals(byteArrayOf(1, 2), firstSnapshot.single().data)
+        firstSnapshot.single().data[1] = 8
+        assertArrayEquals(byteArrayOf(1, 2), ring.snapshot().single().data)
+    }
+
+    @Test
+    fun ownedInsertionRetainsFramesAndEvictsByDurationAndByteBound() {
+        val ring = EncodedAudioFrameRingBuffer(maxDurationUs = 100, maxBytes = 4)
+        ring.addOwned(0, byteArrayOf(0, 1))
+        ring.addOwned(50, byteArrayOf(2, 3))
+        ring.addOwned(150, byteArrayOf(4, 5, 6))
+
+        assertEquals(3, ring.sizeBytes())
+        assertEquals(listOf(150L), ring.snapshot().map { it.presentationTimeUs })
+        assertArrayEquals(byteArrayOf(4, 5, 6), ring.snapshot().single().data)
+    }
+
+    @Test
     fun snapshotIncludesTheFinalEncodedFrame() {
         val ring = EncodedAudioFrameRingBuffer(maxDurationUs = 1_000, maxBytes = 100)
         ring.add(0, byteArrayOf(1))

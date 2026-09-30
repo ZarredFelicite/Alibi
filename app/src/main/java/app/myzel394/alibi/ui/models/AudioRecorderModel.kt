@@ -50,10 +50,9 @@ class AudioRecorderModel :
             onAmplitudeChange()
         }
 
-        // `onServiceConnected` may be called when reconnecting to the service,
-        // so we only want to actually start the recording if the service is idle and thus
-        // not already recording
-        if (service.state == RecorderState.IDLE) {
+        // Only the connection initiated by an explicit start may initialize an idle service.
+        // A passive bind must leave its state and existing batch files untouched.
+        if (isExplicitStartConnection && service.state == RecorderState.IDLE) {
             service.clearAllRecordings()
             service.startRecording()
             onRecordingStart()
