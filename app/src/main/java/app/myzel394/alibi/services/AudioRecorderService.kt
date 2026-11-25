@@ -11,6 +11,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import androidx.core.app.ServiceCompat
+import app.myzel394.alibi.DiagnosticLog
 import app.myzel394.alibi.NotificationHelper
 import app.myzel394.alibi.db.RecordingInformation
 import app.myzel394.alibi.enums.RecorderState
@@ -27,13 +28,18 @@ class AudioRecorderService :
     private val amplitudeUpdateRunnable = Runnable { updateAmplitude() }
     @Volatile
     private var amplitudeUpdatesEnabled = false
-    private val ramAmplitudeLock = Any()
+    private val amplitudeLock = Any()
     private var ramCapture: RamAudioCapture? = null
     private var ramBuffer: EncodedAudioFrameRingBuffer? = null
     private var ramMode = false
     private var ramNextPresentationTimeUs = 0L
+    private var batchedFileMode = false
+    private var batchedFileSink: RotatingAdtsFileSink? = null
+    private var batchedFileCapture: BatchedAacCapture? = null
+    private var batchedFileNextPresentationTimeUs = 0L
+    private val batchedFileLock = Any()
     @Volatile
-    private var ramAmplitude = 0
+    private var captureAmplitude = 0
 
     override val usesIntervalBatches: Boolean
         get() = !ramMode
@@ -58,6 +64,30 @@ class AudioRecorderService :
 
         super.startNewCycle()
 
+        if (batchedFileMode) {
+            val handled = synchronized(batchedFileLock) {
+                if (!batchedFileMode) return@synchronized false
+                if (state != RecorderState.RECORDING) return@synchronized true
+                val stream = openCurrentBatchOutputStream()
+                val sink = batchedFileSink
+                    ?: RotatingAdtsFileSink(settings.audioRecorderSettings.getEffectiveSamplingRate())
+                        .also { batchedFileSink = it }
+                sink.switchTo(stream)
+                if (batchedFileCapture != null) {
+                    return@synchronized true
+                }
+                if (tryStartBatchedFileCapture(sink)) {
+                    return@synchronized true
+                }
+                sink.flushAndClose()
+                batchedFileSink = null
+                batchedFileMode = false
+                DiagnosticLog.log("batched_aac_fallback_mediarecorder")
+                false
+            }
+            if (handled) return
+        }
+
         val newRecorder = createRecorder().also {
             it.prepare()
         }
@@ -77,13 +107,28 @@ class AudioRecorderService :
         amplitudes.clear()
         ramBuffer = null
         ramNextPresentationTimeUs = 0L
+        batchedFileNextPresentationTimeUs = 0L
+        batchedFileSink = null
+        batchedFileCapture = null
+        batchedFileMode = false
+
         ramMode = tryStartRamCapture()
+        if (!ramMode && canUseBatchedAacFileCapture()) {
+            batchedFileMode = true
+            batchedFileSink = RotatingAdtsFileSink(
+                sampleRate = settings.audioRecorderSettings.getEffectiveSamplingRate(),
+            )
+        }
         try {
             super.start()
         } catch (error: RuntimeException) {
             if (ramMode) {
                 stopRamCapture()
                 ramMode = false
+            }
+            if (batchedFileMode) {
+                stopBatchedFileCapture(flushSink = true)
+                batchedFileMode = false
             }
             throw error
         }
@@ -95,16 +140,24 @@ class AudioRecorderService :
         super.pause()
 
         stopAmplitudeUpdates()
-        if (ramMode) stopRamCapture() else resetRecorder()
+        when {
+            ramMode -> stopRamCapture()
+            batchedFileMode -> stopBatchedFileCapture(flushSink = true)
+            else -> resetRecorder()
+        }
     }
 
     override suspend fun stop() {
         stopAmplitudeUpdates()
-        synchronized(ramAmplitudeLock) {
+        synchronized(amplitudeLock) {
             amplitudeUpdatesEnabled = false
-            ramAmplitude = 0
+            captureAmplitude = 0
         }
-        if (ramMode) stopRamCapture() else resetRecorder()
+        when {
+            ramMode -> stopRamCapture()
+            batchedFileMode -> stopBatchedFileCapture(flushSink = true)
+            else -> resetRecorder()
+        }
         unregisterMicrophoneListener()
 
         super.stop()
@@ -137,7 +190,7 @@ class AudioRecorderService :
     private fun getAmplitudeAmount(): Int = amplitudesAmount
 
     private fun getAmplitude(): Int {
-        if (ramMode) return ramAmplitude
+        if (ramMode || batchedFileMode) return captureAmplitude
 
         return try {
             recorder!!.maxAmplitude
@@ -170,12 +223,14 @@ class AudioRecorderService :
 
     /** Enable polling only while a visible visualizer is observing the recording. */
     fun setAmplitudeUpdatesEnabled(enabled: Boolean) {
-        synchronized(ramAmplitudeLock) {
+        synchronized(amplitudeLock) {
             amplitudeUpdatesEnabled = enabled
-            ramAmplitude = 0
+            captureAmplitude = 0
         }
         stopAmplitudeUpdates()
         if (enabled) {
+            ramCapture?.notifyWakeup()
+            batchedFileCapture?.notifyWakeup()
             scheduleAmplitudeUpdate()
         }
     }
@@ -187,6 +242,105 @@ class AudioRecorderService :
     private fun scheduleAmplitudeUpdate() {
         if (amplitudeUpdatesEnabled && state === RecorderState.RECORDING) {
             handler.postDelayed(amplitudeUpdateRunnable, 100)
+        }
+    }
+
+    // ==== Batched AAC file capture ====
+    private fun canUseBatchedAacFileCapture(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return false
+        val audioSettings = settings.audioRecorderSettings
+        val sampleRate = audioSettings.getEffectiveSamplingRate()
+        return audioSettings.getEncoder() == MediaRecorder.AudioEncoder.AAC &&
+                audioSettings.getOutputFormat() == MediaRecorder.OutputFormat.AAC_ADTS &&
+                sampleRate <= MAX_BATCHED_AAC_SAMPLE_RATE &&
+                EncodedAudioFrameRingBuffer.AdtsAac.isSupportedSampleRate(sampleRate)
+    }
+
+    private fun openCurrentBatchOutputStream(): OutputStream {
+        val audioSettings = settings.audioRecorderSettings
+        return when (batchesFolder.type) {
+            BatchesFolder.BatchType.INTERNAL ->
+                batchesFolder.asInternalGetFile(counter, audioSettings.fileExtension).outputStream()
+
+            BatchesFolder.BatchType.CUSTOM ->
+                batchesFolder.asCustomOpenOutputStream(counter, audioSettings.fileExtension)
+
+            BatchesFolder.BatchType.MEDIA -> {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    batchesFolder.asMediaOpenScopedStorageOutputStream(
+                        getNameForMediaFile(),
+                        "audio/${audioSettings.fileExtension}",
+                    )
+                } else {
+                    batchesFolder.asMediaGetLegacyFile(getNameForMediaFile()).outputStream()
+                }
+            }
+        }
+    }
+
+    private fun tryStartBatchedFileCapture(sink: RotatingAdtsFileSink): Boolean {
+        val audioSettings = settings.audioRecorderSettings
+        return runCatching {
+            if (selectedMicrophone != null) startAudioDevice()
+            BatchedAacCapture(
+                audioSettings = audioSettings,
+                sink = sink,
+                shouldReportAmplitude = { amplitudeUpdatesEnabled },
+                onAmplitude = {
+                    synchronized(amplitudeLock) {
+                        if (amplitudeUpdatesEnabled) captureAmplitude = it
+                    }
+                },
+                onError = { error -> handleBatchedFileCaptureError(error) },
+                startPresentationTimeUs = batchedFileNextPresentationTimeUs,
+                preferredDevice = selectedMicrophone?.deviceInfo,
+            ).also {
+                batchedFileCapture = it
+                it.start()
+                DiagnosticLog.log(
+                    "audio_capture_mode",
+                    "mode=batched_aac_file;sampleRate=${audioSettings.getEffectiveSamplingRate()};bitRate=${audioSettings.getEffectiveBitRate()};ringFrames=${it.actualBufferFrames};readBytes=${it.backgroundReadBytes};sleepMs=${it.backgroundSleepMs}",
+                )
+            }
+            true
+        }.getOrElse { error ->
+            DiagnosticLog.logException("batched_aac_start_failed", error)
+            batchedFileCapture = null
+            if (selectedMicrophone != null) runCatching { clearAudioDevice() }
+            false
+        }
+    }
+
+    private fun handleBatchedFileCaptureError(error: Throwable) {
+        if (!batchedFileMode || state == RecorderState.STOPPED) return
+
+        synchronized(batchedFileLock) {
+            batchedFileCapture = null
+            batchedFileSink?.flushAndClose()
+        }
+        if (selectedMicrophone != null) {
+            runCatching { clearAudioDevice() }
+        }
+        reportRecordingError("batched_aac_capture_failure", error)
+    }
+
+    private fun stopBatchedFileCapture(flushSink: Boolean) {
+        val capture = synchronized(batchedFileLock) {
+            val current = batchedFileCapture
+            batchedFileCapture = null
+            current
+        }
+        capture?.stop()
+        if (capture != null) {
+            batchedFileNextPresentationTimeUs = capture.nextPresentationTimeUs
+        }
+        if (flushSink) {
+            synchronized(batchedFileLock) {
+                batchedFileSink?.flushAndClose()
+            }
+        }
+        if (selectedMicrophone != null) {
+            runCatching { clearAudioDevice() }
         }
     }
 
@@ -217,12 +371,13 @@ class AudioRecorderService :
                 buffer = buffer,
                 shouldReportAmplitude = { amplitudeUpdatesEnabled },
                 onAmplitude = {
-                    synchronized(ramAmplitudeLock) {
-                        if (amplitudeUpdatesEnabled) ramAmplitude = it
+                    synchronized(amplitudeLock) {
+                        if (amplitudeUpdatesEnabled) captureAmplitude = it
                     }
                 },
                 onError = { handleRamCaptureError() },
                 startPresentationTimeUs = ramNextPresentationTimeUs,
+                preferredDevice = selectedMicrophone?.deviceInfo,
             ).also {
                 ramCapture = it
                 ramBuffer = buffer
@@ -417,6 +572,9 @@ class AudioRecorderService :
                     ramMode = false
                     startNewCycle()
                 }
+            } else if (batchedFileMode) {
+                stopBatchedFileCapture(flushSink = false)
+                startNewCycle()
             } else {
                 startNewCycle()
             }
@@ -497,5 +655,6 @@ class AudioRecorderService :
 
     companion object {
         private const val MAX_RAM_BUFFER_BYTES = 32L * 1024L * 1024L
+        private const val MAX_BATCHED_AAC_SAMPLE_RATE = 48_000
     }
 }

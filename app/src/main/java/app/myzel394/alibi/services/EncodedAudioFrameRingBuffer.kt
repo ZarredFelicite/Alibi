@@ -102,33 +102,54 @@ class EncodedAudioFrameRingBuffer(
             7350 to 12,
         )
 
+        fun isSupportedSampleRate(sampleRate: Int): Boolean =
+            sampleRateIndex.containsKey(sampleRate)
+
+        fun frequencyIndex(sampleRate: Int): Int =
+            sampleRateIndex[sampleRate]
+                ?: throw IllegalArgumentException("Unsupported AAC sample rate: $sampleRate")
+
+        fun writeHeader(
+            target: ByteArray,
+            rawFrameLength: Int,
+            frequencyIndex: Int,
+            channelCount: Int,
+            audioObjectType: Int = 2,
+        ) {
+            require(target.size >= 7) { "ADTS header buffer must be at least 7 bytes" }
+            require(rawFrameLength > 0) { "AAC frame must not be empty" }
+            require(channelCount in 1..7) { "Unsupported AAC channel count" }
+            require(audioObjectType in 1..4) { "Unsupported AAC object type" }
+
+            val frameLength = rawFrameLength + 7
+            require(frameLength <= 0x1FFF) { "AAC frame is too large for ADTS" }
+
+            target[0] = 0xFF.toByte()
+            target[1] = 0xF1.toByte() // MPEG-4, no CRC
+            target[2] = (((audioObjectType - 1) shl 6) or
+                    (frequencyIndex shl 2) or
+                    (channelCount shr 2)).toByte()
+            target[3] = (((channelCount and 3) shl 6) or
+                    (frameLength shr 11)).toByte()
+            target[4] = (frameLength shr 3).toByte()
+            target[5] = (((frameLength and 7) shl 5) or 0x1F).toByte()
+            target[6] = 0xFC.toByte()
+        }
+
         fun frame(
             rawAacFrame: ByteArray,
             sampleRate: Int,
             channelCount: Int,
             audioObjectType: Int,
         ): ByteArray {
-            require(rawAacFrame.isNotEmpty()) { "AAC frame must not be empty" }
-            require(channelCount in 1..7) { "Unsupported AAC channel count" }
-            require(audioObjectType in 1..4) { "Unsupported AAC object type" }
-
-            val frequencyIndex = sampleRateIndex[sampleRate]
-                ?: throw IllegalArgumentException("Unsupported AAC sample rate: $sampleRate")
-            val frameLength = rawAacFrame.size + 7
-            require(frameLength <= 0x1FFF) { "AAC frame is too large for ADTS" }
-
             val header = ByteArray(7)
-            header[0] = 0xFF.toByte()
-            header[1] = 0xF1.toByte() // MPEG-4, no CRC
-            header[2] = (((audioObjectType - 1) shl 6) or
-                    (frequencyIndex shl 2) or
-                    (channelCount shr 2)).toByte()
-            header[3] = (((channelCount and 3) shl 6) or
-                    (frameLength shr 11)).toByte()
-            header[4] = (frameLength shr 3).toByte()
-            header[5] = (((frameLength and 7) shl 5) or 0x1F).toByte()
-            header[6] = 0xFC.toByte()
-
+            writeHeader(
+                target = header,
+                rawFrameLength = rawAacFrame.size,
+                frequencyIndex = frequencyIndex(sampleRate),
+                channelCount = channelCount,
+                audioObjectType = audioObjectType,
+            )
             return header + rawAacFrame
         }
     }

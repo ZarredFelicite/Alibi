@@ -16,6 +16,7 @@ import app.myzel394.alibi.ui.RECORDER_MEDIA_SELECTED_VALUE
 import com.arthenica.ffmpegkit.FFmpegKitConfig
 import java.io.File
 import java.io.FileDescriptor
+import java.io.OutputStream
 import java.time.LocalDateTime
 
 class AudioBatchesFolder(
@@ -89,6 +90,29 @@ class AudioBatchesFolder(
         runCatching {
             mediaFileFileDescriptor?.close()
         }
+    }
+
+    fun asCustomOpenOutputStream(
+        counter: Long,
+        fileExtension: String,
+    ): OutputStream {
+        val file =
+            getCustomDefinedFolder().createFile("audio/$fileExtension", "$counter.$fileExtension")!!
+        registerBatch(file.name ?: "$counter.$fileExtension", document = file)
+        return context.contentResolver.openOutputStream(file.uri, "w")!!
+    }
+
+    @RequiresApi(Build.VERSION_CODES.Q)
+    fun asMediaOpenScopedStorageOutputStream(
+        name: String,
+        mimeType: String,
+    ): OutputStream {
+        val mediaUri = getOrCreateMediaFile(
+            name = name,
+            mimeType = mimeType,
+            relativePath = SCOPED_STORAGE_RELATIVE_PATH,
+        )
+        return context.contentResolver.openOutputStream(mediaUri, "w")!!
     }
 
     fun asCustomGetFileDescriptor(
