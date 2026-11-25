@@ -52,4 +52,21 @@ class ActiveRecordingTimeTest {
         clock.advanceSeconds(1)
         assertEquals(51L, timer.elapsedSeconds)
     }
+
+    @Test
+    fun resetClearsStoppedStateForReusedService() {
+        val clock = FakeClock()
+        val timer = ActiveRecordingTime { clock.nowNanos }
+
+        timer.start()
+        clock.advanceSeconds(7)
+        timer.stop()
+        assertEquals(7L, timer.elapsedSeconds)
+
+        timer.reset()
+        assertEquals(0L, timer.elapsedSeconds)
+        timer.start()
+        clock.advanceSeconds(4)
+        assertEquals(4L, timer.elapsedSeconds)
+    }
 }

@@ -110,13 +110,20 @@ abstract class IntervalRecorderService<I, B : BatchesFolder> :
     }
 
     private fun createTimer() {
+        if (::cycleTimer.isInitialized && !cycleTimer.isShutdown) {
+            cycleTimer.shutdownNow()
+        }
         cycleTimer = Executors.newSingleThreadScheduledExecutor().also {
             it.scheduleAtFixedRate(
                 {
                     try {
                         startNewCycle()
                     } catch (error: Throwable) {
-                        DiagnosticLog.logException("recording_cycle_failure", error)
+                        if (error is AvoidErrorDialogError) {
+                            DiagnosticLog.logException("recording_cycle_failure", error)
+                        } else {
+                            reportRecordingError("recording_cycle_failure", error)
+                        }
                         throw error
                     }
                 },
@@ -128,6 +135,9 @@ abstract class IntervalRecorderService<I, B : BatchesFolder> :
     }
 
     override fun start() {
+        synchronized(retentionLock) {
+            counter = 0L
+        }
         super.start()
 
         batchesFolder.initFolders()

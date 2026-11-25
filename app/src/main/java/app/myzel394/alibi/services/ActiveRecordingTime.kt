@@ -26,6 +26,12 @@ internal class ActiveRecordingTime(
         stopped = true
     }
 
+    fun reset() {
+        accumulatedNanos = 0L
+        activeSinceNanos = null
+        stopped = false
+    }
+
     private fun elapsedNanos(): Long {
         val since = activeSinceNanos ?: return accumulatedNanos
         return accumulatedNanos + (monotonicNanos() - since).coerceAtLeast(0L)

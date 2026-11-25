@@ -54,7 +54,11 @@ abstract class BaseRecorderModel<I, B : BatchesFolder, T : IntervalRecorderServi
         throw NotImplementedError("onRecordingSave not implemented")
     }
     var onRecordingStart: () -> Unit = {}
-    var onError: () -> Unit = {}
+    var onError: (() -> Unit)? = null
+        set(value) {
+            field = value
+            recorderService?.onError = value
+        }
     var onBatchesFolderNotAccessible: () -> Unit = {}
     abstract var batchesFolder: B?
 
@@ -93,9 +97,7 @@ abstract class BaseRecorderModel<I, B : BatchesFolder, T : IntervalRecorderServi
                 recordingTime = recorder.recordingTime
             }
             recordingTime = recorder.recordingTime
-            recorder.onError = {
-                onError()
-            }
+            recorder.onError = onError
             recorder.onBatchesFolderNotAccessible = {
                 onBatchesFolderNotAccessible()
             }
@@ -243,6 +245,7 @@ abstract class BaseRecorderModel<I, B : BatchesFolder, T : IntervalRecorderServi
     }
 
     fun unbindFromService(context: Context) {
+        recorderService?.onError = null
         runCatching {
             context.unbindService(connection)
         }

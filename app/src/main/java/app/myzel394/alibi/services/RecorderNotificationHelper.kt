@@ -1,15 +1,19 @@
 package app.myzel394.alibi.services
 
+import android.annotation.SuppressLint
 import android.app.Notification
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
 import app.myzel394.alibi.MainActivity
 import app.myzel394.alibi.NotificationHelper
 import app.myzel394.alibi.R
 import app.myzel394.alibi.db.NotificationSettings
 import app.myzel394.alibi.enums.RecorderState
+import app.myzel394.alibi.ui.utils.PermissionHelper
 import kotlinx.serialization.Serializable
 import java.time.LocalDateTime
 import java.time.ZoneId
@@ -155,5 +159,74 @@ data class RecorderNotificationHelper(
                 getNotificationChangeStateIntent(RecorderState.RECORDING, 3),
             )
             .build()
+    }
+
+    internal fun buildInterruptedNotification(
+        reason: RecorderSessionState.InterruptionReason,
+    ): Notification {
+        val descriptionRes = when (reason) {
+            RecorderSessionState.InterruptionReason.SYSTEM_RESTART ->
+                R.string.ui_recorder_state_interrupted_description
+
+            RecorderSessionState.InterruptionReason.DEVICE_REBOOT ->
+                R.string.ui_recorder_state_interrupted_reboot_description
+
+            RecorderSessionState.InterruptionReason.APP_UPDATED ->
+                R.string.ui_recorder_state_interrupted_updated_description
+
+            RecorderSessionState.InterruptionReason.RECORDING_ERROR ->
+                R.string.ui_recorder_state_interrupted_error_description
+        }
+
+        val openAppIntent = PendingIntent.getActivity(
+            context,
+            4,
+            Intent(context, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+
+        return NotificationCompat.Builder(
+            context,
+            NotificationHelper.RECORDER_ALERT_CHANNEL_ID,
+        )
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_STATUS)
+            .setSmallIcon(R.drawable.launcher_monochrome_noopacity)
+            .setContentTitle(context.getString(R.string.ui_recorder_state_interrupted_title))
+            .setContentText(context.getString(descriptionRes))
+            .setStyle(NotificationCompat.BigTextStyle().bigText(context.getString(descriptionRes)))
+            .setContentIntent(openAppIntent)
+            .setAutoCancel(true)
+            .build()
+    }
+
+    companion object {
+        @SuppressLint("MissingPermission")
+        internal fun notifyRecordingInterrupted(
+            context: Context,
+            reason: RecorderSessionState.InterruptionReason,
+        ) {
+            if (!PermissionHelper.hasGranted(context, android.Manifest.permission.POST_NOTIFICATIONS)) {
+                return
+            }
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                NotificationHelper.createChannels(context)
+            }
+
+            val notification = RecorderNotificationHelper(context)
+                .buildInterruptedNotification(reason)
+            NotificationManagerCompat.from(context).notify(
+                NotificationHelper.RECORDER_ALERT_NOTIFICATION_ID,
+                notification,
+            )
+        }
+
+        internal fun cancelInterruptedNotification(context: Context) {
+            NotificationManagerCompat.from(context)
+                .cancel(NotificationHelper.RECORDER_ALERT_NOTIFICATION_ID)
+        }
     }
 }

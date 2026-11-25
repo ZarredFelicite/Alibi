@@ -69,11 +69,12 @@ class AudioRecorderService :
             recorder = newRecorder
             newRecorder.start()
         } catch (error: RuntimeException) {
-            onError()
+            reportRecordingError("audio_cycle_start_failure", error)
         }
     }
 
     override fun start() {
+        amplitudes.clear()
         ramBuffer = null
         ramNextPresentationTimeUs = 0L
         ramMode = tryStartRamCapture()
@@ -242,7 +243,7 @@ class AudioRecorderService :
         // The capture has already released its resources before this callback. Mark the
         // service stopped before handing control to the existing save/error flow.
         changeState(RecorderState.STOPPED)
-        onError()
+        reportRecordingError("ram_capture_failure")
     }
 
     private fun stopRamCapture() {
@@ -387,7 +388,7 @@ class AudioRecorderService :
             setAudioEncodingBitRate(audioSettings.getEffectiveBitRate())
             setAudioSamplingRate(audioSettings.getEffectiveSamplingRate())
             setOnErrorListener(OnErrorListener { _, _, _ ->
-                onError()
+                reportRecordingError("media_recorder_error")
             })
         }
     }

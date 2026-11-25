@@ -50,9 +50,11 @@ class AudioRecorderModel :
             onAmplitudeChange()
         }
 
-        // Only the connection initiated by an explicit start may initialize an idle service.
-        // A passive bind must leave its state and existing batch files untouched.
-        if (isExplicitStartConnection && service.state == RecorderState.IDLE) {
+        // Only the connection initiated by an explicit start may initialize an idle or
+        // reused stopped service. A passive bind must leave state and batch files untouched.
+        if (isExplicitStartConnection &&
+            (service.state == RecorderState.IDLE || service.state == RecorderState.STOPPED)
+        ) {
             service.clearAllRecordings()
             service.startRecording()
             onRecordingStart()

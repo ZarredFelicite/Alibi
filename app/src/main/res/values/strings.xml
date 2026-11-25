@@ -15,6 +15,8 @@
 
     <string name="notificationChannels_recorder_name">Recorder</string>
     <string name="notificationChannels_recorder_description">Shows the current recording status</string>
+    <string name="notificationChannels_recorderAlert_name">Recording Alerts</string>
+    <string name="notificationChannels_recorderAlert_description">Alerts you if recording stops unexpectedly</string>
 
     <string name="ui_permissions_request_title">Permission denied</string>
     <string name="ui_permissions_request">Please grant the permission to continue</string>
@@ -79,6 +81,11 @@
     <string name="ui_settings_value_auto_label">Auto</string>
     <string name="ui_recorder_state_paused_title">Recording paused</string>
     <string name="ui_recorder_state_paused_description">Alibi is paused</string>
+    <string name="ui_recorder_state_interrupted_title">Recording stopped</string>
+    <string name="ui_recorder_state_interrupted_description">Alibi stopped recording unexpectedly. Tap to open Alibi and resume.</string>
+    <string name="ui_recorder_state_interrupted_reboot_description">Recording stopped because the device restarted. Tap to open Alibi.</string>
+    <string name="ui_recorder_state_interrupted_updated_description">Recording stopped because Alibi was updated. Tap to open Alibi.</string>
+    <string name="ui_recorder_state_interrupted_error_description">Recording stopped due to an error. Tap to open Alibi.</string>
     <string name="ui_recorder_error_recording_title">An error occurred</string>
     <string name="ui_recorder_error_recording_description">Alibi encountered an error during recording. Try using different settings or restart the app.</string>
     <string name="ui_settings_language_title">Language</string>

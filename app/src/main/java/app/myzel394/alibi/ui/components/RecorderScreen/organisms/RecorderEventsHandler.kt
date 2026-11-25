@@ -303,7 +303,7 @@ fun RecorderEventsHandler(
                 audioRecorder.onRecordingSave = {
                     throw NotImplementedError("onRecordingSave should not be called now")
                 }
-                audioRecorder.onError = {}
+                audioRecorder.onError = null
             }
         }
     }
@@ -354,7 +354,7 @@ fun RecorderEventsHandler(
                 videoRecorder.onRecordingSave = {
                     throw NotImplementedError("onRecordingSave should not be called now")
                 }
-                videoRecorder.onError = {}
+                videoRecorder.onError = null
             }
         }
     }

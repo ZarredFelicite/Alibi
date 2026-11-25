@@ -75,6 +75,8 @@ class VideoRecorderService :
     }
 
     override fun start() {
+        _cameraAvailableListener = CompletableDeferred()
+        _cameraCloserListener = CompletableDeferred()
         super.start()
 
         scope.launch {
@@ -205,7 +207,7 @@ class VideoRecorderService :
 
                 _cameraAvailableListener.complete(Unit)
             } catch (error: IllegalArgumentException) {
-                onError()
+                reportRecordingError("video_camera_bind_failure", error)
             }
         }
     }
